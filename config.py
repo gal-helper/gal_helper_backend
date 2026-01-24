@@ -6,8 +6,8 @@ load_dotenv()
 
 class Config:
     
-    DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "sk-e900e5ccae374e65ba3a45722c74313b")
-    DB_PASSWORD = os.getenv("DB_PASSWORD", "11a22B33(")
+    DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
+    DB_PASSWORD = os.getenv("DB_PASSWORD")
     
     DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
     EMBEDDING_MODEL = "text-embedding-v2"
