@@ -15,7 +15,7 @@ class Config:
     API_TIMEOUT = 60
     EMBEDDING_TIMEOUT = 30
     
-    DB_HOST = "pgm-uf6n7qif31xum72r.pg.rds.aliyuncs.com"
+    DB_HOST = os.getenv("DB_HOST")
     DB_PORT = 5432
     DB_NAME = "ai_knowledge_db"
     DB_USER = "dick2416910961"
