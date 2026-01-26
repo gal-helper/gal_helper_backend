@@ -3,7 +3,6 @@ import logging
 import time
 import pandas as pd
 from typing import List, Dict, Any, Optional
-from datetime import datetime
 
 from config import config
 from ai_service import ai_service
@@ -88,26 +87,36 @@ class TextProcessor:
         return documents
     
     @staticmethod
-    def build_rag_prompt(question: str, context_docs: List[Dict[str, Any]]) -> List[Dict[str, str]]:
-        if not context_docs:
+    def build_rag_prompt(question: str, context_docs: List[Dict[str, Any]], 
+                        web_context: Optional[str] = None) -> List[Dict[str, str]]:
+        if not context_docs and not web_context:
             return [
                 {"role": "system", "content": "You are a helpful AI assistant."},
                 {"role": "user", "content": question}
             ]
         
-        context_text = "\n\n".join([
-            f"From document '{doc.get('filename', 'Unknown')}':\n{doc['content']}"
-            for doc in context_docs
-        ])
+        context_parts = []
+        
+        if context_docs:
+            doc_context = "\n\n".join([
+                f"From document '{doc.get('filename', 'Unknown')}':\n{doc['content']}"
+                for doc in context_docs
+            ])
+            context_parts.append(f"Document Context:\n{doc_context}")
+        
+        if web_context:
+            context_parts.append(f"Web Search Results:\n{web_context}")
+        
+        full_context = "\n\n---\n\n".join(context_parts)
         
         return [
             {
                 "role": "system", 
-                "content": "You are a helpful AI assistant that answers questions based on the provided context. Answer the question based ONLY on the provided context. If the context doesn't contain relevant information, say I don't have enough information to answer this question based on the provided documents. Do not make up information."
+                "content": "You are a helpful AI assistant that answers questions based on available information."
             },
             {
                 "role": "user", 
-                "content": f"Context Information:\n{context_text}\n\nQuestion: {question}\n\nPlease answer the question based on the context above."
+                "content": f"Available Information:\n{full_context}\n\nQuestion: {question}"
             }
         ]
 
@@ -216,7 +225,8 @@ class RAGProcessor:
         except Exception as e:
             logger.error(f"Embedding generation failed for document {doc_id}: {e}")
     
-    async def ask_question(self, question: str, use_rag: bool = True) -> Dict[str, Any]:
+    async def ask_question(self, question: str, use_rag: bool = True, 
+                          use_web_search: bool = False, max_web_results: int = 5) -> Dict[str, Any]:
         if not self.initialized:
             await self.initialize()
         
@@ -227,6 +237,8 @@ class RAGProcessor:
             "answer": "",
             "sources": [],
             "rag_used": use_rag,
+            "web_search_used": False,
+            "deep_search_used": False,
             "response_time": 0,
             "error": None
         }
@@ -241,10 +253,7 @@ class RAGProcessor:
                 
                 logger.info(f"Database has {total_docs} total documents")
                 
-                if total_docs == 0:
-                    logger.warning("No documents found in database, RAG cannot work")
-                    search_method = "no_docs"
-                else:
+                if total_docs > 0:
                     vectorized_docs = stats.get('vectorized_documents', 0)
                     
                     if vectorized_docs > 0:
@@ -261,9 +270,6 @@ class RAGProcessor:
                                 if context_docs:
                                     search_method = "vector"
                                     logger.info(f"Vector search found {len(context_docs)} documents")
-                                else:
-                                    search_method = "vector_no_match"
-                                    logger.info("Vector search returned no matches above threshold")
                         except Exception as vector_error:
                             search_method = "vector_error"
                             logger.error(f"Vector search failed: {vector_error}")
@@ -279,40 +285,56 @@ class RAGProcessor:
                             if context_docs:
                                 search_method = "keyword"
                                 logger.info(f"Keyword search found {len(context_docs)} documents")
-                            else:
-                                search_method = "keyword_no_match"
-                                logger.info("Keyword search returned no matches")
                         except Exception as keyword_error:
                             search_method = "keyword_error"
                             logger.error(f"Keyword search failed: {keyword_error}")
+        
+            if use_web_search:
+                try:
+                    logger.info(f"Using Deep Search for: {question[:100]}...")
+                    
+                    deep_search_result = await ai_service.deep_search(question)
+                    
+                    result["answer"] = deep_search_result["content"]
+                    result["web_search_used"] = deep_search_result.get("search_used", False)
+                    result["deep_search_used"] = deep_search_result.get("deep_search", False)
+                    result["success"] = True
+                    
+                    logger.info(f"Deep Search completed: deep_search={result['deep_search_used']}")
+                    
+                    if deep_search_result.get("error"):
+                        result["error"] = deep_search_result["error"]
+                    
+                except Exception as web_error:
+                    logger.error(f"Deep Search failed: {web_error}")
+                    result["error"] = f"Web search failed: {str(web_error)}"
             
-            logger.info(f"Final search method: {search_method}, Context docs: {len(context_docs)}")
+            if not use_web_search or (use_web_search and result.get("error")):
+                logger.info(f"Using standard RAG mode for: {question[:100]}...")
+                
+                messages = self.text_processor.build_rag_prompt(question, context_docs)
+                
+                answer = await ai_service.chat_completion(messages)
+                result["answer"] = answer
+                result["success"] = True
             
-            messages = self.text_processor.build_rag_prompt(question, context_docs)
-            logger.info(f"Calling AI with {len(context_docs)} context documents")
-            
-            answer = await ai_service.chat_completion(messages)
+            all_sources = []
             
             if context_docs:
-                result["sources"] = [
-                    {
+                for doc in context_docs:
+                    all_sources.append({
                         "filename": doc.get("filename", "Unknown"),
                         "content": doc["content"][:150] + "..." if len(doc["content"]) > 150 else doc["content"],
                         "similarity": doc.get("similarity", 0),
+                        "source_type": "document",
                         "search_method": search_method
-                    }
-                    for doc in context_docs
-                ]
-                result["rag_used"] = True
-            else:
-                result["rag_used"] = False
+                    })
             
-            result["answer"] = answer
-            result["success"] = True
+            result["sources"] = all_sources
             
-            source_filenames = [doc.get("filename", "") for doc in context_docs]
+            source_filenames = [s.get("filename", s.get("title", "")) for s in all_sources]
             await db_service.save_query_history(
-                question, answer, source_filenames, time.time() - start_time
+                question, result["answer"], source_filenames, time.time() - start_time
             )
             
         except Exception as e:
@@ -326,6 +348,8 @@ class RAGProcessor:
                 result["answer"] = fallback_answer
                 result["success"] = True
                 result["rag_used"] = False
+                result["web_search_used"] = False
+                result["deep_search_used"] = False
             except Exception as fallback_error:
                 result["answer"] = f"System error: {str(e)}"
         
@@ -339,7 +363,9 @@ class RAGProcessor:
                 "ai_service": "Alibaba DashScope",
                 "embedding_dimension": config.EMBEDDING_DIM,
                 "similarity_threshold": config.SIMILARITY_THRESHOLD,
-                "initialized": self.initialized
+                "initialized": self.initialized,
+                "dashscope_search_enabled": True,
+                "deep_search_enabled": True
             })
             return stats
         except Exception as e:

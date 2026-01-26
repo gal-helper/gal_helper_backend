@@ -6,19 +6,22 @@ load_dotenv()
 
 class Config:
     
-    DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY")
-    DB_PASSWORD = os.getenv("DB_PASSWORD")
+    DASHSCOPE_API_KEY = ""
+    DB_PASSWORD = ""
+    DASHSCOPE_APP_ID = ""
     
     DASHSCOPE_BASE_URL = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    DASHSCOPE_APP_BASE_URL = "https://dashscope.aliyuncs.com/api/v1"
     EMBEDDING_MODEL = "text-embedding-v2"
-    CHAT_MODEL = "qwen-max"
+    CHAT_MODEL = "qwen3-max"
     API_TIMEOUT = 60
     EMBEDDING_TIMEOUT = 30
+    APP_API_TIMEOUT = 90
     
-    DB_HOST = os.getenv("DB_HOST")
+    DB_HOST = ""
     DB_PORT = 5432
     DB_NAME = "ai_knowledge_db"
-    DB_USER = "dick2416910961"
+    DB_USER = ""
     
     DB_POOL_MIN_SIZE = 1
     DB_POOL_MAX_SIZE = 10
@@ -38,13 +41,15 @@ class Config:
     
     LOG_LEVEL = "INFO"
     SUPPORTED_EXTENSIONS = ['.txt', '.xlsx', '.xls', '.csv']
-    MAX_FILE_SIZE = 10 * 1024 * 1024  # 10MB
+    MAX_FILE_SIZE = 10 * 1024 * 1024
     TEMP_DIR = "/tmp/rag_uploads"
     
     API_HOST = "101.132.36.117"
     API_PORT = 8000
     API_RELOAD = False
-    CORS_ORIGINS = ["*"]
+    
+    DEEP_SEARCH_AGENT_ID = ""
+    DEEP_SEARCH_AGENT_VERSION = "beta"
     
     @property
     def database_params(self) -> Dict[str, Any]:
