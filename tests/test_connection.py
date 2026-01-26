@@ -5,9 +5,11 @@ import os
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config import config
-from ai_service import ai_service
-from database import db_service
+from app.core.config import config
+from app.core.db import db_manager
+from app.crud.common import CommonCRUD
+from app.services.ai.embedding_service import get_embedding_service
+from app.services.ai.chat_service import get_chat_service
 
 async def test_ai_connection():
     """Test Alibaba DashScope API connection"""
@@ -22,12 +24,12 @@ async def test_ai_connection():
     try:
         # Test embedding
         test_text = "Test connection to Alibaba DashScope"
-        embedding = await ai_service.get_embedding(test_text)
+        embedding = await get_embedding_service().get_embedding(test_text)
         
         print(f"✅ Embedding generated: {len(embedding)} dimensions")
         
         # Test chat
-        response = await ai_service.chat_completion([
+        response = await get_chat_service().chat_completion([
             {"role": "user", "content": "Say hello in one word"}
         ])
         
@@ -46,15 +48,17 @@ async def test_database_connection():
     print("\n[2/3] Testing Database Connection...")
     
     try:
-        connected = await db_service.connect()
+        connected = await db_manager.connect()
+        pool = await db_manager.get_pool()
         if not connected:
             print("❌ Database connection failed")
             return False
         
         print("✅ Database connected successfully")
-        
+
+        common_crud = CommonCRUD(pool)
         # Test table creation
-        initialized = await db_service.initialize_tables()
+        initialized = await common_crud.initialize_tables()
         if initialized:
             print("✅ Database tables initialized")
         else:
@@ -71,7 +75,7 @@ async def test_system_integration():
     
     try:
         # Import after dependencies are tested
-        from rag_processor import rag_processor
+        from app.services.ai.rag_processor import rag_processor
         
         initialized = await rag_processor.initialize()
         if not initialized:
@@ -95,10 +99,7 @@ async def test_system_integration():
 async def test_network_connectivity():
     """Test network connectivity to Alibaba services"""
     print("\n[0/3] Testing Network Connectivity...")
-    
-    import socket
-    import aiohttp
-    
+
     test_endpoints = [
         ("dashscope.aliyuncs.com", 443),
         ("api.deepseek.com", 443),

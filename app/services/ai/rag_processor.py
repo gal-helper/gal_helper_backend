@@ -1,12 +1,15 @@
-import asyncio
 import logging
 import time
 import pandas as pd
 from typing import List, Dict, Any, Optional
-
-from config import config
-from ai_service import ai_service
-from database import db_service
+from fastapi import Depends
+from app.core.config import config
+from app.services.ai.chat_service import ChatService, get_chat_service
+from app.services.ai.embedding_service import EmbeddingService, get_embedding_service
+from app.services.ai.search_service import SearchService, get_search_service
+from app.crud.common import CommonCRUD, get_commons_crud
+from app.crud.documents import DocumentsCRUD, get_documents_crud
+from app.crud.rag_history import RAGHistoryCRUD, get_rag_history_crud
 
 logger = logging.getLogger(__name__)
 
@@ -122,22 +125,27 @@ class TextProcessor:
 
 class RAGProcessor:
     
-    def __init__(self):
+    def __init__(self, embedding_service: EmbeddingService, search_service: SearchService,
+                 chat_service: ChatService,
+                 common_crud: CommonCRUD, doc_crud: DocumentsCRUD, history_crud: RAGHistoryCRUD):
         self.text_processor = TextProcessor()
         self.initialized = False
-    
+        self.embedding_service = embedding_service
+        self.search_service = search_service
+        self.chat_service = chat_service
+        self.common_crud = common_crud
+        self.doc_crud = doc_crud
+        self.history_crud = history_crud
+
+
     async def initialize(self) -> bool:
         try:
             logger.info("Initializing RAG processor...")
             
-            test_embedding = await ai_service.get_embedding("test")
+            test_embedding = await self.embedding_service.get_embedding("test")
             logger.info(f"AI service initialized: {len(test_embedding)}D embeddings")
-            
-            if not await db_service.connect():
-                logger.error("Failed to connect to database")
-                return False
-            
-            if not await db_service.initialize_tables():
+
+            if not await self.common_crud.initialize_tables():
                 logger.warning("Table initialization may have issues, continuing...")
             
             self.initialized = True
@@ -180,7 +188,7 @@ class RAGProcessor:
             
             saved_ids = []
             for doc in documents:
-                doc_id = await db_service.save_document(
+                doc_id = await self.doc_crud.save_document(
                     doc['filename'], 
                     doc['content'], 
                     doc['file_type'], 
@@ -215,10 +223,10 @@ class RAGProcessor:
     
     async def _generate_document_embedding(self, doc_id: int, content: str):
         try:
-            embedding = await ai_service.get_embedding(content)
+            embedding = await self.embedding_service.get_embedding(content)
             
             if embedding:
-                await db_service.update_document_embedding(doc_id, embedding)
+                await self.doc_crud.update_document_embedding(doc_id, embedding)
                 logger.info(f"Embedding generated for document {doc_id}")
             else:
                 logger.error(f"Failed to generate embedding for document {doc_id}")
@@ -248,7 +256,7 @@ class RAGProcessor:
             search_method = "none"
             
             if use_rag:
-                stats = await db_service.get_statistics()
+                stats = await self.history_crud.get_statistics()
                 total_docs = stats.get('documents', 0)
                 
                 logger.info(f"Database has {total_docs} total documents")
@@ -259,10 +267,10 @@ class RAGProcessor:
                     if vectorized_docs > 0:
                         try:
                             logger.info(f"Trying vector search for: {question[:100]}...")
-                            question_embedding = await ai_service.get_embedding(question)
+                            question_embedding = await self.embedding_service.get_embedding(question)
                             
                             if question_embedding:
-                                context_docs = await db_service.search_similar_documents(
+                                context_docs = await self.doc_crud.search_similar_documents(
                                     question_embedding, 
                                     config.MAX_CONTEXT_CHUNKS
                                 )
@@ -277,7 +285,7 @@ class RAGProcessor:
                     if not context_docs:
                         try:
                             logger.info(f"Trying keyword search for: {question[:100]}...")
-                            context_docs = await db_service.keyword_search(
+                            context_docs = await self.doc_crud.keyword_search(
                                 question, 
                                 config.MAX_CONTEXT_CHUNKS
                             )
@@ -293,7 +301,7 @@ class RAGProcessor:
                 try:
                     logger.info(f"Using Deep Search for: {question[:100]}...")
                     
-                    deep_search_result = await ai_service.deep_search(question)
+                    deep_search_result = await self.search_service.deep_search(question)
                     
                     result["answer"] = deep_search_result["content"]
                     result["web_search_used"] = deep_search_result.get("search_used", False)
@@ -314,7 +322,7 @@ class RAGProcessor:
                 
                 messages = self.text_processor.build_rag_prompt(question, context_docs)
                 
-                answer = await ai_service.chat_completion(messages)
+                answer = await self.chat_service.chat_completion(messages)
                 result["answer"] = answer
                 result["success"] = True
             
@@ -333,7 +341,7 @@ class RAGProcessor:
             result["sources"] = all_sources
             
             source_filenames = [s.get("filename", s.get("title", "")) for s in all_sources]
-            await db_service.save_query_history(
+            await self.history_crud.save_query_history(
                 question, result["answer"], source_filenames, time.time() - start_time
             )
             
@@ -342,7 +350,7 @@ class RAGProcessor:
             result["error"] = str(e)
             
             try:
-                fallback_answer = await ai_service.chat_completion([
+                fallback_answer = await self.chat_service.chat_completion([
                     {"role": "user", "content": question}
                 ])
                 result["answer"] = fallback_answer
@@ -358,7 +366,7 @@ class RAGProcessor:
     
     async def get_stats(self) -> Dict[str, Any]:
         try:
-            stats = await db_service.get_statistics()
+            stats = await self.history_crud.get_statistics()
             stats.update({
                 "ai_service": "Alibaba DashScope",
                 "embedding_dimension": config.EMBEDDING_DIM,
@@ -372,4 +380,15 @@ class RAGProcessor:
             logger.error(f"Failed to get stats: {e}")
             return {"error": str(e)}
 
-rag_processor = RAGProcessor()
+
+
+# 注入工厂
+def get_rag_processor(
+        embedding_service: EmbeddingService = Depends(get_embedding_service),
+        search_service: SearchService = Depends(get_search_service),
+        chat_service: ChatService = Depends(get_chat_service),
+        common_crud: CommonCRUD=Depends(get_commons_crud),
+        doc_crud: DocumentsCRUD=Depends(get_documents_crud),
+        history_crud: RAGHistoryCRUD=Depends(get_rag_history_crud)
+) -> RAGProcessor:
+    return RAGProcessor(embedding_service, search_service, chat_service, common_crud, doc_crud, history_crud)

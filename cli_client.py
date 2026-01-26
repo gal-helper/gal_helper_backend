@@ -2,16 +2,15 @@ import asyncio
 import sys
 import os
 import argparse
-from typing import Optional
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from rag_processor import rag_processor
+from app.services.ai.rag_processor import get_rag_processor
 
 class CLIClient:
     
     def __init__(self):
-        self.rag = rag_processor
+        self.rag = get_rag_processor()
     
     async def initialize(self) -> bool:
         print("Initializing AI RAG system...")

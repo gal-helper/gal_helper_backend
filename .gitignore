@@ -1,0 +1,14 @@
+env
+*.pyc
+__pycache__
+
+.idea
+.vscode
+.DS_Store
+*.ipynb_checkpoints
+
+docqa/*
+log/*
+log.jsonl
+
+AGENTS.md

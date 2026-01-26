@@ -1,20 +1,20 @@
 import asyncio
 import sys
 import os
-import json
 import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-from config import config
-from ai_service import ai_service
-from database import db_service
-from rag_processor import rag_processor
+from app.services.ai.embedding_service import get_embedding_service
+from app.core import config
+from app.core.db import db_manager
+from app.crud.documents import DocumentsCRUD
+from app.crud.rag_history import RAGHistoryCRUD
+from app.services.ai.rag_processor import rag_processor
 
 async def debug_database_connection():
     print("\n[1/7] Debugging database connection...")
     
-    if not await db_service.connect():
+    if not await db_manager.connect():
         print("FAILED: Database connection failed")
         return False
     
@@ -25,7 +25,7 @@ async def debug_table_structure():
     print("\n[2/7] Debugging table structure...")
     
     try:
-        async with db_service.pool.acquire() as conn:
+        async with db_manager.pool.acquire() as conn:
             tables = await conn.fetch("""
                 SELECT table_name 
                 FROM information_schema.tables 
@@ -66,7 +66,7 @@ async def debug_vector_extension():
     print("\n[3/7] Debugging pgvector extension...")
     
     try:
-        async with db_service.pool.acquire() as conn:
+        async with db_manager.pool.acquire() as conn:
             extensions = await conn.fetch("""
                 SELECT extname, extversion 
                 FROM pg_extension 
@@ -103,7 +103,7 @@ async def debug_embedding_generation():
     try:
         for i, text in enumerate(test_texts, 1):
             print(f"\n  Test {i}: '{text[:30]}...'")
-            embedding = await ai_service.get_embedding(text)
+            embedding = await get_embedding_service().get_embedding(text)
             print(f"    Dimensions: {len(embedding)}")
             print(f"    First 3 values: {embedding[:3]}")
             print(f"    Last 3 values: {embedding[-3:]}")
@@ -121,9 +121,11 @@ async def debug_search_functionality():
     test_query = "machine learning artificial intelligence"
     
     try:
-        query_embedding = await ai_service.get_embedding(test_query)
+        query_embedding = await get_embedding_service().get_embedding(test_query)
         print(f"Query embedding generated: {len(query_embedding)} dimensions")
-        
+
+        db_service = DocumentsCRUD(db_manager.get_pool())
+
         vector_results = await db_service.search_similar_documents(query_embedding, limit=3)
         print(f"Vector search results: {len(vector_results)} documents")
         
@@ -183,7 +185,9 @@ async def debug_detailed_vector_search():
     print("\n[7/7] Detailed vector search debugging...")
     
     try:
-        async with db_service.pool.acquire() as conn:
+        async with db_manager.pool.acquire() as conn:
+
+            db_service = RAGHistoryCRUD(db_manager.get_pool())
             stats = await db_service.get_statistics()
             total_docs = stats.get('documents', 0)
             vectorized_docs = stats.get('vectorized_documents', 0)
@@ -206,7 +210,7 @@ async def debug_detailed_vector_search():
                     print(f"  Filename: {sample_vector_doc['filename']}")
                     print(f"  Content preview: {doc_content}")
                     
-                    doc_embedding = await ai_service.get_embedding(sample_vector_doc['content'])
+                    doc_embedding = await get_embedding_service().get_embedding(sample_vector_doc['content'])
                     
                     raw_results = await conn.fetch(f"""
                         SELECT 
@@ -229,7 +233,7 @@ async def debug_detailed_vector_search():
                             print(f"    ✗ Below threshold ({config.SIMILARITY_THRESHOLD})")
             
             test_query = "technology artificial intelligence"
-            query_embedding = await ai_service.get_embedding(test_query)
+            query_embedding = await get_embedding_service().get_embedding(test_query)
             
             raw_query_results = await conn.fetch(f"""
                 SELECT 
@@ -293,7 +297,9 @@ async def create_test_document():
         if result['success']:
             print("Waiting for embedding generation...")
             await asyncio.sleep(3)
-            
+
+            db_service = RAGHistoryCRUD(db_manager.get_pool())
+
             stats = await db_service.get_statistics()
             print(f"Vectorized documents after test: {stats.get('vectorized_documents', 0)}")
         
