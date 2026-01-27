@@ -5,6 +5,17 @@ from pydantic_settings import BaseSettings
 load_dotenv()
 
 class Config(BaseSettings):
+
+    # 通用的模型配置，使用openai的接口规范(基本都兼容)
+    CHAT_MODEL_BASE_URL: str = ""
+    CHAT_MODEL_NAME: str = ""
+    CHAT_MODEL_API_KEY: str = ""
+
+    # 通用的embedding模型配置
+    BASE_EMBEDDING_MODEL_BASE_URL: str = ""
+    BASE_EMBEDDING_MODEL_NAME: str = ""
+    BASE_EMBEDDING_API_KEY: str = ""
+
     DASHSCOPE_API_KEY: str = ""
     DB_PASSWORD: str = ""
     DASHSCOPE_APP_ID: str = ""
