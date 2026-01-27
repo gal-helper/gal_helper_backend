@@ -11,10 +11,12 @@ async def lifespan(app: FastAPI):
     logger.info("Starting AI RAG API server...")
     # 数据库连接池初始化
     from app.core.db import db_manager
+
     await db_manager.connect()
-    # RAG处理服务初始化
-    from app.services.ai.rag_processor import get_rag_processor
-    await get_rag_processor().initialize()
+    # RAG处理服务初始化（使用全局单例）
+    from app.services.ai.rag_processor import rag_processor
+
+    await rag_processor.initialize()
 
     logger.info("Services initialized successfully")
 

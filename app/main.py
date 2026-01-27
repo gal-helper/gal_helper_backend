@@ -1,17 +1,17 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.api.v1 import api_router
-from app.core import lifespan, logging
+from app.core.logging import setup_logging
+from app.core.lifespan import lifespan
 
-logging.setup_logging()
+setup_logging()
 
 # 1. 实例化 FastAPI
 app = FastAPI(
     title="AI RAG API",
     description="API for AI RAG Question Answering System",
     version="1.0.0",
-    # 挂载生命周期钩子
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 # 2. 配置中间件，目前有跨域中间件

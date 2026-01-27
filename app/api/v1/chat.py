@@ -10,28 +10,21 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/ask")
-async def ask_question(
-        question: str = Form(...),
-        use_rag: bool = Form(True)
-):
+async def ask_question(question: str = Form(...), use_rag: bool = Form(True)):
     try:
         logger.info(f"Processing question: {question[:100]}...")
 
         result = await rag_processor.ask_question(question, use_rag)
 
-        response = {
+        return {
             "success": result["success"],
             "question": question,
             "answer": result["answer"],
             "sources": result.get("sources", []),
             "rag_used": use_rag,
-            "response_time": result.get("response_time", 0)
+            "response_time": result.get("response_time", 0),
+            "error": result.get("error"),
         }
-
-        if result.get("error"):
-            response["error"] = result["error"]
-
-        return response
     except Exception as e:
         logger.error(f"Error in /ask endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -40,7 +33,9 @@ async def ask_question(
 @router.post("/upload")
 async def upload_document(file: UploadFile = File(...)):
     try:
-        with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename)[1]) as tmp_file:
+        filename = file.filename or ""
+        suffix = os.path.splitext(filename)[1] if filename else ""
+        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
             content = await file.read()
             tmp_file.write(content)
             tmp_path = tmp_file.name
@@ -51,18 +46,14 @@ async def upload_document(file: UploadFile = File(...)):
 
         os.unlink(tmp_path)
 
-        response = {
+        return {
             "filename": file.filename,
             "success": result["success"],
             "chunks": result.get("chunks", 0),
             "documents_processed": result.get("documents_processed", 0),
-            "message": result.get("message", "")
+            "message": result.get("message", ""),
+            "document_ids": result.get("document_ids", []),
         }
-
-        if result.get("document_ids"):
-            response["document_ids"] = result["document_ids"]
-
-        return response
     except Exception as e:
         logger.error(f"Error in /upload endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
