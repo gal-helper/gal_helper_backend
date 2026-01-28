@@ -5,6 +5,8 @@ from app.core.logging import setup_logging
 from app.core.lifespan import lifespan
 from scalar_fastapi import get_scalar_api_reference
 
+from app.utils.exception_handlers import register_exception_handlers
+
 setup_logging()
 
 # 1. 实例化 FastAPI
@@ -16,6 +18,8 @@ app = FastAPI(
     docs_url=None,
     redoc_url=None,
 )
+# 注册全局异常处理
+register_exception_handlers(app)
 
 # 2. 配置中间件，目前有跨域中间件
 app.add_middleware(
