@@ -34,6 +34,10 @@ class Config(BaseSettings):
     DB_PORT: int = 5432
     DB_NAME: str = "ai_knowledge_db"
     DB_USER: str = ""
+    # 异步模式ORM URL
+    ASYNC_DATABASE_URL: str = ""
+    # 异步模式Langchain URL
+    LANGCHAIN_DATABASE_URL: str = ""
 
     # 数据库连接池配置
     DB_POOL_MIN_SIZE: int = 1

@@ -14,6 +14,10 @@ dependencies = [
     "python-dotenv>=1.0.0", # 加载.env
     "dashscope>=1.14.0", # 阿里ai版本
     "pydantic-settings>=2.12.0", # pydantic-settings
+    "sqlalchemy[asyncio]>=2.0.46", # sqlalchemy ORM框架
+     # postgres官方库，langchain官方指定 使用
+    "psycopg>=3.3.2",
+
     # AI/ML
     "numpy>=1.24.0", # numpy
     "pydantic>=2.5.0", # 数据验证和解析
@@ -21,7 +25,16 @@ dependencies = [
     "openpyxl>=3.1.0", # 读写excel
     "pandas>=2.0.0", # 数据分析和数据处理库
     "python-multipart>=0.0.6", # 处理multipart/form-data
+    # 文档UI
     "scalar-fastapi>=1.6.1",
+    # Agent框架
+    "langchain>=1.2.7",
+    "langchain-openai>=1.1.7",
+    "langchain-community>=0.4.1",
+    "langchain-postgres>=0.0.16",
+    "langgraph-checkpoint-postgres>=3.0.3",
+    # uuid工具库，用于生成session_code
+    "uuid6>=2025.0.1",
 ]
 
 [tool.uv]
