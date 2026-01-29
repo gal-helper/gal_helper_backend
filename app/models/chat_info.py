@@ -7,12 +7,12 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 from sqlalchemy.types import Integer, String
 
 class Base(DeclarativeBase):
-    create_time: Mapped[str] = mapped_column(
+    create_time: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.now,
         comment="创建时间"
     )
-    update_time: Mapped[str] = mapped_column(
+    update_time: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.now,
         comment="更新时间"
