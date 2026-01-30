@@ -57,7 +57,7 @@ db_manager = DatabaseManager()
 
 class AsyncDatabaseManager:
     def __init__(self):
-        self._async_engine: Optional[AsyncEngine] = None
+        self.async_engine: Optional[AsyncEngine] = None
         self._async_session: Optional[async_sessionmaker[AsyncSession]] = None
         self._raw_pool: Optional[AsyncConnectionPool] = None  # 新增：原始连接池 用于 Langchain
 
@@ -72,7 +72,7 @@ class AsyncDatabaseManager:
         await self._raw_pool.open()
 
         # 2. 创建异步引擎
-        self._async_engine = create_async_engine(
+        self.async_engine = create_async_engine(
             config.ASYNC_DATABASE_URL,
             echo=True, # 可选：输出SQL日志
             pool_size=10, # 设置连接池中保持的持久连接数
@@ -81,7 +81,7 @@ class AsyncDatabaseManager:
 
         # 3. 创建异步会话工厂
         self._async_session = async_sessionmaker(
-            bind=self._async_engine,
+            bind=self.async_engine,
             class_=AsyncSession,
             expire_on_commit=False,
         )
@@ -92,9 +92,9 @@ class AsyncDatabaseManager:
         logger.info("Closing all async database...")
 
         # 1. 关闭 SQLAlchemy 引擎
-        if self._async_engine:
-            await self._async_engine.dispose()
-            self._async_engine = None
+        if self.async_engine:
+            await self.async_engine.dispose()
+            self.async_engine = None
             self._async_session = None
             logger.info("Async database engine disposed.")
         # 2. 关闭 psycopg 原始连接池 (给 LangGraph 用的那个)
