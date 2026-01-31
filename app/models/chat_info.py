@@ -42,16 +42,3 @@ class ChatMessage(Base):
 
     def __repr__(self):
         return f"<ChatMessage(id={self.id}, fk_session_id={self.fk_session_id}, message_id={self.message_id}, parent_id={self.parent_id}, role={self.role}, message={self.message})>"
-
-
-class ChatSessionMemory(Base):
-
-    __tablename__ = "ai_chat_session_memory"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=False, comment="会话历史ID")
-    chat_session_code: Mapped[str] = mapped_column(String, unique=True, nullable=False, comment="会话编码")
-    # 使用jsonb来存储会话历史
-    chat_session_memory: Mapped[Dict[str, Any]] = mapped_column(JSONB, default=dict, comment="会话历史")
-
-    def __repr__(self):
-        return f"<ChatSessionMemory(id={self.id}, chat_session_code={self.chat_session_code}, chat_session_memory={self.chat_session_memory})>"
