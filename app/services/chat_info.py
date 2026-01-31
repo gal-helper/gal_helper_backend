@@ -4,13 +4,13 @@ import logging
 from fastapi import Depends
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.db import async_db_manager
 from app.core.dependencies import get_async_dbsession
-from app.models.chat_info import ChatSession
+from app.models.chat_info import ChatSession, ChatMessage
 from app.services.ai.agent_graph import get_gal_agent
 from app.utils.utils import UUIDUtil, SSEUtil
 from app.crud.chat_info import chat_session_crud, chat_message_crud
 from app.utils.constants import EventType, ChatRole
+from app.schemas.chat_info import ChatHistoryMessagesResponse
 
 logger = logging.getLogger(__name__)
 
@@ -34,10 +34,60 @@ def get_chat_session_service(
     return ChatSessionService(db)
 
 
+async def build_history_message(
+    chat_session: ChatSession, chat_messages: list[ChatMessage]
+) -> ChatHistoryMessagesResponse:
+    from app.schemas.chat_info import ChatSession as ChatSessionSchema
+    from app.schemas.chat_info import ChatMessage as ChatMessageSchema
+
+    chat_session_schema = ChatSessionSchema(
+        id=chat_session.chat_session_code,
+        updated_at=chat_session.update_time,
+        version=chat_session.current_message_id,
+        current_message_id=chat_session.current_message_id,
+        inserted_at=chat_session.create_time,
+    )
+
+    chat_messages_schema = [
+        ChatMessageSchema(
+            message_id=msg.message_id,
+            parent_id=msg.parent_id,
+            role=ChatRole(msg.role),
+            message_content=msg.message,
+            accumulated_token_usage=0,
+            inserted_at=msg.create_time,
+        )
+        for msg in chat_messages
+    ]
+
+    return ChatHistoryMessagesResponse(
+        chat_session=chat_session_schema, chat_messages=chat_messages_schema
+    )
+
+
 class ChatMessageService:
     def __init__(self, db: AsyncSession, agent: CompiledStateGraph):
         self.db = db
         self.agent = agent
+
+    async def get_history_message(self, session_code: str):
+        logger.info(f"获取会话编码为：{session_code}的历史消息")
+        # 1. 查询获取会话信息
+        chat_session = await chat_session_crud.get_by_session_code(
+            self.db, session_code
+        )
+        if not chat_session:
+            logger.error(f"会话编码为：{session_code}的会话不存在")
+            raise Exception("会话不存在")
+        # 2. 根据会话id查询所有消息
+        chat_messages: list = await chat_message_crud.get_all_messages_of_session(
+            self.db, chat_session.id
+        )
+        if not chat_messages:
+            logger.info(f"会话编码为：{session_code}的会话没有历史消息")
+            chat_messages = []
+        # 3. 构建历史消息响应数据
+        return await build_history_message(chat_session, chat_messages)
 
     async def chat(self, session_code: str, ask_text: str):
         # --- 事件 1 ready ---

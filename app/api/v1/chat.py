@@ -9,6 +9,7 @@ import logging
 from fastapi.params import Form, File
 
 from app.services.chat_info import ChatMessageService, get_chat_message_service
+from app.utils.response import success_response
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -65,9 +66,23 @@ async def upload_document(file: UploadFile = File(...)):
 
 
 @router.post("/completion")
-async def completion(chatSessionCode: str, askText: str,
-                     chat_message_service: ChatMessageService = Depends(get_chat_message_service)):
+async def completion(
+    chatSessionCode: str,
+    askText: str,
+    chat_message_service: ChatMessageService = Depends(get_chat_message_service),
+):
     return StreamingResponse(
         chat_message_service.chat(chatSessionCode, askText),
         media_type="text/event-stream",
+    )
+
+
+@router.get("/history_messages")
+async def get_history_messages(
+    chatSessionCode: str,
+    chat_message_service: ChatMessageService = Depends(get_chat_message_service),
+):
+    return success_response(
+        "获取历史消息成功",
+        await chat_message_service.get_history_message(chatSessionCode),
     )
