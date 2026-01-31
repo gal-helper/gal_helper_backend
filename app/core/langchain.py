@@ -26,6 +26,8 @@ class LangchainManager:
         """初始化langchain管理器"""
         await self._init_base_chat_model()
         self._checkpointer = await self.get_checkpointer()
+        await self._init_base_embeddings()
+        self._vectorstore = await self.get_vectorstore()
 
     async def _init_base_chat_model(self):
         """初始化基本的chatModel"""
@@ -59,8 +61,7 @@ class LangchainManager:
             return
         try:
             self._embeddingModel = init_embeddings(
-                model=config.BASE_EMBEDDING_MODEL_NAME,
-                model_provider="openai",
+                model=f"openai:{config.BASE_EMBEDDING_MODEL_NAME}",
                 base_url=config.BASE_EMBEDDING_MODEL_BASE_URL,
                 api_key=config.BASE_EMBEDDING_API_KEY,
                 timeout=None,
@@ -81,11 +82,13 @@ class LangchainManager:
             raise RuntimeError("Embedding model not initialized")
         return self._embeddingModel
 
-    async def get_checkpointer(self):
+    async def get_checkpointer(self) -> AsyncPostgresSaver:
         """获取postgresSQL管理的checkpointer"""
         if not self._checkpointer:
-            pool = async_db_manager.get_raw_pool()
-            self._checkpointer = AsyncPostgresSaver(pool)
+            conn_manager = AsyncPostgresSaver.from_conn_string(
+                config.LANGCHAIN_DATABASE_URL
+            )
+            self._checkpointer = await conn_manager.__aenter__()
             await self._checkpointer.setup()
         return self._checkpointer
 
@@ -94,15 +97,20 @@ class LangchainManager:
         if not self._vectorstore:
             embeddings = await self.get_base_embeddings()
 
-            # 复用业务模块的 AsyncEngine
             await async_db_manager.init_async_database()
             async_engine = async_db_manager.async_engine
+            if not async_engine:
+                raise RuntimeError("Async engine not initialized")
 
             pg_engine = PGEngine.from_engine(async_engine)
             self._vectorstore = await AsyncPGVectorStore.create(
                 engine=pg_engine,
                 embedding_service=embeddings,
                 table_name="document_embeddings",
+                id_column = "langchain_id",
+                content_column = "document_content",
+                embedding_column = "embedding",
+                metadata_json_column = "langchain_metadata",
             )
             logger.info("AsyncPGVectorStore initialized (reusing ORM engine)")
         return self._vectorstore

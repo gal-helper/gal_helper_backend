@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.db import db_manager, async_db_manager
 from app.core.langchain import langchain_manager
 
+
 # --- 1. 基础依赖：获取连接池 ---
 async def get_db_pool() -> asyncpg.Pool:
     """
@@ -15,9 +16,10 @@ async def get_db_pool() -> asyncpg.Pool:
     """
     return db_manager.get_pool()
 
+
 # --- 2. 进阶依赖：获取单个数据库连接 (自动管理) ---
 async def get_db_conn(
-    pool: asyncpg.Pool = Depends(get_db_pool)
+    pool: asyncpg.Pool = Depends(get_db_pool),
 ) -> AsyncGenerator[asyncpg.Connection, None]:
     """
     通过 yield 实现上下文管理。
@@ -27,12 +29,16 @@ async def get_db_conn(
     async with pool.acquire() as connection:
         yield connection
 
+
 # --- 3. 获取orm管理的session ---
-async def get_async_dbsession() -> AsyncGenerator[AsyncSession, None]:
+async def get_async_dbsession(
+    session: AsyncSession = Depends(async_db_manager.get_async_db),
+) -> AsyncSession:
     """
     返回一个异步的orm管理的dbsession
     """
-    return async_db_manager.get_async_db()
+    return session
+
 
 # --- 4. LLM，获取basemodel ---
 async def get_base_model() -> BaseChatModel:

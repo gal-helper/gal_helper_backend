@@ -1,9 +1,14 @@
 import os
 import tempfile
+
+from fastapi.responses import StreamingResponse
+
 from app.services.ai.rag_processor import rag_processor
-from fastapi import APIRouter, UploadFile, HTTPException
+from fastapi import APIRouter, UploadFile, HTTPException, Depends
 import logging
 from fastapi.params import Form, File
+
+from app.services.chat_info import ChatMessageService, get_chat_message_service
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -57,3 +62,12 @@ async def upload_document(file: UploadFile = File(...)):
     except Exception as e:
         logger.error(f"Error in /upload endpoint: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/completion")
+async def completion(chatSessionCode: str, askText: str,
+                     chat_message_service: ChatMessageService = Depends(get_chat_message_service)):
+    return StreamingResponse(
+        chat_message_service.chat(chatSessionCode, askText),
+        media_type="text/event-stream",
+    )

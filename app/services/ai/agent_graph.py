@@ -5,6 +5,7 @@ from app.core.langchain import langchain_manager
 
 
 async def get_gal_agent() -> CompiledStateGraph:  # -> CompiledStateGraph
+    """构建一个demo级别的agent"""
     model = await langchain_manager.get_base_chat_model()
     if model is None:
         raise RuntimeError("Chat model not initialized")

@@ -59,7 +59,6 @@ class AsyncDatabaseManager:
     def __init__(self):
         self.async_engine: Optional[AsyncEngine] = None
         self._async_session: Optional[async_sessionmaker[AsyncSession]] = None
-        self._raw_pool: Optional[AsyncConnectionPool] = None  # 新增：原始连接池 用于 Langchain
 
     async def init_async_database(self):
         if self._async_session:
@@ -67,11 +66,7 @@ class AsyncDatabaseManager:
 
         logger.info("Initializing async database...")
 
-        # 1. 初始化底层的 psycopg 连接池（给 LangGraph 用）
-        self._raw_pool = AsyncConnectionPool(conninfo=config.LANGCHAIN_DATABASE_URL, max_size=10, open=False)
-        await self._raw_pool.open()
-
-        # 2. 创建异步引擎
+        # 1 创建异步引擎
         self.async_engine = create_async_engine(
             config.ASYNC_DATABASE_URL,
             echo=True, # 可选：输出SQL日志
@@ -79,7 +74,7 @@ class AsyncDatabaseManager:
             max_overflow=10, # 设置连接池允许创建的额外连接数
         )
 
-        # 3. 创建异步会话工厂
+        # 2 创建异步会话工厂
         self._async_session = async_sessionmaker(
             bind=self.async_engine,
             class_=AsyncSession,
@@ -97,15 +92,9 @@ class AsyncDatabaseManager:
             self.async_engine = None
             self._async_session = None
             logger.info("Async database engine disposed.")
-        # 2. 关闭 psycopg 原始连接池 (给 LangGraph 用的那个)
-        if self._raw_pool:
-            # close 会断开所有空闲连接
-            await self._raw_pool.close()
-            self._raw_pool = None
-            logger.info("LangGraph raw connection pool closed.")
 
     # 依赖项，用于获取数据库会话
-    async def get_async_db(self) -> AsyncGenerator[AsyncSession, None]:
+    async def get_async_db(self):
         if not self._async_session:
             await self.init_async_database()
             # 重新检查，确保初始化成功
@@ -114,19 +103,14 @@ class AsyncDatabaseManager:
 
         async with self._async_session() as session:
             try:
-                yield session
-                await session.commit()
+                yield session # 返回数据库会话给路由处理函数
+                await session.commit() # 无异常，提交事务
             except Exception as e:
-                await session.rollback()
+                await session.rollback() # 有异常，回滚事务
                 raise e
             finally:
-                await session.close()
+                await session.close() # 关闭会话
 
-    # 新增：专门给 LangchainManager 用的 getter
-    async def get_raw_pool(self) -> AsyncConnectionPool:
-        if not self._raw_pool:
-            raise RuntimeError("Database not initialized")
-        return self._raw_pool
 
 # 创建全局唯一实例
 async_db_manager = AsyncDatabaseManager()
