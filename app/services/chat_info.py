@@ -47,7 +47,8 @@ class ChatMessageService:
         if not chat_session_info:
             raise Exception("会话不存在")
         logger.info(
-            f"会话信息编码:{chat_session_info.chat_session_code}，当前的会话序列:{chat_session_info.current_message_id}"
+            f"会话信息编码:{chat_session_info.chat_session_code}，当前的会话序列:{chat_session_info.current_message_id}，"
+            f"用户的问题为：{ask_text}"
         )
         current_message_id: int = chat_session_info.current_message_id
         next_message_id: int = (
@@ -97,6 +98,8 @@ class ChatMessageService:
 
         # --- 事件 4 finish ---
         yield SSEUtil.format_sse(event=EventType.FINISH, data={})
+
+        logger.info(f"AI回复为：{full_response}")
 
         # --- 事件 5 update_session ---
         await chat_message_crud.update_ai_message(self.db, ai_message_id, full_response)
