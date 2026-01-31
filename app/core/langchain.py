@@ -9,7 +9,7 @@ from langchain_postgres.v2.async_vectorstore import AsyncPGVectorStore
 from langchain_postgres.v2.engine import PGEngine
 
 from app.core.config import config
-from app.core.db import async_db_manager
+from app.core.db import async_db_manager, langchain_pool
 import logging
 
 logger = logging.getLogger(__name__)
@@ -85,10 +85,8 @@ class LangchainManager:
     async def get_checkpointer(self) -> AsyncPostgresSaver:
         """获取postgresSQL管理的checkpointer"""
         if not self._checkpointer:
-            conn_manager = AsyncPostgresSaver.from_conn_string(
-                config.LANGCHAIN_DATABASE_URL
-            )
-            self._checkpointer = await conn_manager.__aenter__()
+            pool = langchain_pool.get_pool()
+            self._checkpointer = AsyncPostgresSaver(conn=pool)
             await self._checkpointer.setup()
         return self._checkpointer
 
@@ -107,10 +105,10 @@ class LangchainManager:
                 engine=pg_engine,
                 embedding_service=embeddings,
                 table_name="document_embeddings",
-                id_column = "langchain_id",
-                content_column = "document_content",
-                embedding_column = "embedding",
-                metadata_json_column = "langchain_metadata",
+                id_column="langchain_id",
+                content_column="document_content",
+                embedding_column="embedding",
+                metadata_json_column="langchain_metadata",
             )
             logger.info("AsyncPGVectorStore initialized (reusing ORM engine)")
         return self._vectorstore
