@@ -1,3 +1,5 @@
+from typing import Sequence
+
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.chat_info import ChatSession, ChatMessage
@@ -114,6 +116,16 @@ class ChatMessageCRUD:
         if chat_message is None:
             raise Exception("消息不存在")
         chat_message.message = message_text
+
+    async def get_all_messages_of_session(
+        self, db: AsyncSession, session_id: int
+    ) -> Sequence[ChatMessage]:
+        """
+        根据session_id获取该会话的所有聊天消息
+        """
+        stmt = select(ChatMessage).where(ChatMessage.fk_session_id == session_id)
+        result = await db.execute(stmt)
+        return result.scalars().all()
 
 
 # 实例化单例，供其他service模块调用
