@@ -26,8 +26,11 @@ class ChatSessionService:
         logger.info(f"创建成功，会话编码为：{session_code}")
         return session_code
 
+
 # 注入工厂
-def get_chat_session_service(db: AsyncSession = Depends(get_async_dbsession)) -> ChatSessionService:
+def get_chat_session_service(
+    db: AsyncSession = Depends(get_async_dbsession),
+) -> ChatSessionService:
     return ChatSessionService(db)
 
 
@@ -60,17 +63,18 @@ class ChatMessageService:
         )
 
         # --- 事件 2 update_session ---
-        # TODO: 修复依赖注入问题后再启用数据库操作
-        # await chat_message_crud.insert_user_message(
-        #     self.db, chat_session_info, current_message_id, ask_text
-        # )
-        # ai_message_id: int = await chat_message_crud.insert_ai_message(
-        #     self.db, chat_session_info, next_message_id, None
-        # )
-        # await chat_session_crud.update_message_id_of_session(
-        #     self.db, chat_session_info.id, next_message_id + 1
-        # )
-        ai_message_id = 1  # 临时占位
+        # 插入用户消息
+        await chat_message_crud.insert_user_message(
+            self.db, chat_session_info, current_message_id, ask_text
+        )
+        # 插入AI消息（但没有消息内容）
+        ai_message_id: int = await chat_message_crud.insert_ai_message(
+            self.db, chat_session_info, next_message_id, None
+        )
+        # 更新会话信息
+        await chat_session_crud.update_message_id_of_session(
+            self.db, chat_session_info.id, next_message_id + 1
+        )
 
         yield SSEUtil.format_sse(
             event=EventType.UPDATE_SESSION, data={"updated_at": datetime.now()}
@@ -95,8 +99,8 @@ class ChatMessageService:
         yield SSEUtil.format_sse(event=EventType.FINISH, data={})
 
         # --- 事件 5 update_session ---
-        # TODO: 修复依赖注入问题后再启用数据库操作
-        # await chat_message_crud.update_ai_message(self.db, ai_message_id, full_response)
+        await chat_message_crud.update_ai_message(self.db, ai_message_id, full_response)
+        await self.db.commit()
         yield SSEUtil.format_sse(
             event=EventType.UPDATE_SESSION, data={"updated_at": datetime.now()}
         )
@@ -105,6 +109,9 @@ class ChatMessageService:
         yield SSEUtil.format_sse(event=EventType.CLOSE, data={"click_behavior": "none"})
 
 
-async def get_chat_message_service(db: AsyncSession = Depends(get_async_dbsession),
-                                   agent: CompiledStateGraph = Depends(get_gal_agent)) -> ChatMessageService:
+# 注入工厂
+async def get_chat_message_service(
+    db: AsyncSession = Depends(get_async_dbsession),
+    agent: CompiledStateGraph = Depends(get_gal_agent),
+) -> ChatMessageService:
     return ChatMessageService(db, agent)

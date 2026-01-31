@@ -110,7 +110,7 @@ class ChatMessageCRUD:
         """
         根据message表的id更新AI生成的消息内容
         """
-        chat_message = db.get(ChatMessage, id)
+        chat_message = await db.get(ChatMessage, id)
         if chat_message is None:
             raise Exception("消息不存在")
         chat_message.message = message_text
