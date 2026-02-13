@@ -131,20 +131,44 @@ class ChatMessageService:
             event=EventType.UPDATE_SESSION, data={"updated_at": datetime.now()}
         )
 
-        # --- 事件 3 AI 内容流 (message) ---
+        # --- 事件 3 AI 内容流 ---
         full_response = ""
-        async for chunk in self.agent.astream(
-            {"messages": [{"role": ChatRole.USER, "content": ask_text}]},
-            stream_mode="messages",
-            config={"configurable": {"thread_id": session_code}},
+
+        # 构建 Agent 输入
+        inputs = {
+            "input": ask_text,
+            "chat_history": await self._build_chat_history(session_code),
+        }
+
+        # 流式执行 Agent
+        async for event in self.agent.astream_events(
+                inputs,
+                version="v2",
+                config={"configurable": {"thread_id": session_code}}
         ):
-            token, metadata = chunk
-            if hasattr(token, "content") and token.content:
-                full_response += token.content
+            kind = event["event"]
+
+            # 工具调用事件 - 推给前端显示
+            if kind == "on_tool_start":
                 yield SSEUtil.format_sse(
-                    event=EventType.MESSAGE,
-                    data={"content": token.content},
+                    event=EventType.REASONING,
+                    data={"tool": event["name"], "status": "start"}
                 )
+            elif kind == "on_tool_end":
+                yield SSEUtil.format_sse(
+                    event=EventType.REASONING,
+                    data={"tool": event["name"], "status": "end"}
+                )
+
+            # LLM 输出流
+            elif kind == "on_chat_model_stream":
+                chunk = event["data"]["chunk"]
+                if chunk.content:
+                    full_response += chunk.content
+                    yield SSEUtil.format_sse(
+                        event=EventType.MESSAGE,
+                        data={"content": chunk.content}
+                    )
 
         # --- 事件 4 finish ---
         yield SSEUtil.format_sse(event=EventType.FINISH, data={})

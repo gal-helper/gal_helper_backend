@@ -16,53 +16,86 @@ logger = logging.getLogger(__name__)
 
 
 @router.post("/ask")
-async def ask_question(question: str = Form(...), use_rag: bool = Form(True)):
+async def ask_question(
+        question: str = Form(...),
+        use_rag: bool = Form(True),  # 保留参数，但不使用
+        chat_message_service: ChatMessageService = Depends(get_chat_message_service)
+):
+    """
+    兼容旧接口：转发到新版的 /completion 流式接口
+    返回格式保持与旧版一致（非流式）
+    """
     try:
-        logger.info(f"Processing question: {question[:100]}...")
+        session_code = f"temp_{uuid6.uuid7()}"
 
-        result = await rag_processor.ask_question(question, use_rag)
+        # 收集流式响应的完整内容
+        full_answer = ""
+        sources = []
+
+        async for chunk in chat_message_service.chat(session_code, question):
+            # 解析 SSE 格式
+            if chunk.startswith("data: "):
+                try:
+                    data = json.loads(chunk[6:])
+                    if data.get("event") == "message":
+                        full_answer += data["data"]["content"]
+                    elif data.get("event") == "retrieval":
+                        sources.append(data["data"])
+                except:
+                    pass
 
         return {
-            "success": result["success"],
+            "success": True,
             "question": question,
-            "answer": result["answer"],
-            "sources": result.get("sources", []),
-            "rag_used": use_rag,
-            "response_time": result.get("response_time", 0),
-            "error": result.get("error"),
+            "answer": full_answer,
+            "sources": sources,
+            "rag_used": True,
+            "response_time": 0,
+            "error": None
         }
+
     except Exception as e:
-        logger.error(f"Error in /ask endpoint: {e}")
+        logger.error(f"/ask 转发失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/upload")
-async def upload_document(file: UploadFile = File(...)):
+async def upload_document(
+        file: UploadFile = File(...),
+        vectorstore: AsyncPGVectorStore = Depends(lambda: langchain_manager.get_vectorstore())
+):
+
     try:
-        filename = file.filename or ""
-        suffix = os.path.splitext(filename)[1] if filename else ""
-        with tempfile.NamedTemporaryFile(delete=False, suffix=suffix) as tmp_file:
-            content = await file.read()
-            tmp_file.write(content)
-            tmp_path = tmp_file.name
+        documents = TextProcessor.process_file_content(tmp_path)
+        from langchain_core.documents import Document
+        docs = []
+        for doc in documents:
+            docs.append(
+                Document(
+                    page_content=doc["content"],
+                    metadata={
+                        "filename": doc["filename"],
+                        "file_type": doc["file_type"],
+                        **doc["metadata"]
+                    }
+                )
+            )
 
-        logger.info(f"Uploading file: {file.filename}")
-
-        result = await rag_processor.process_document(tmp_path)
-
-        os.unlink(tmp_path)
+        ids = await vectorstore.aadd_documents(docs)
 
         return {
+            "success": True,
             "filename": file.filename,
-            "success": result["success"],
-            "chunks": result.get("chunks", 0),
-            "documents_processed": result.get("documents_processed", 0),
-            "message": result.get("message", ""),
-            "document_ids": result.get("document_ids", []),
+            "document_ids": ids,
+            "chunks": len(ids)
         }
+
     except Exception as e:
-        logger.error(f"Error in /upload endpoint: {e}")
+        logger.error(f"上传失败: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if os.path.exists(tmp_path):
+            os.unlink(tmp_path)
 
 
 @router.post("/completion")
