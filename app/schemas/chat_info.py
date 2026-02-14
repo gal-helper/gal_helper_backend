@@ -1,4 +1,5 @@
 from typing import List, Optional, Any, Union
+from app.utils.constants import ChatRole
 from pydantic import BaseModel, Field
 from app.utils.constants import ChatRole
 from datetime import datetime

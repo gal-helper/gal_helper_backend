@@ -3,14 +3,22 @@ import sys
 import os
 import argparse
 
+# Windows 专用：设置事件循环策略（必须放在最前面！）
+if sys.platform == 'win32':
+    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from app.services.chat_info import ChatMessageService
 from app.core.langchain import langchain_manager
-from app.core.db import async_db_manager, langchain_pool
+from app.core.db import async_db_manager, langchain_pool, db_initializer
 from app.crud.chat_info import chat_session_crud
 from app.services.ai.agent_graph import get_gal_agent
 import uuid6
+import logging
+
+# 设置日志级别
+logging.basicConfig(level=logging.INFO)
 
 
 class CLIClient:
@@ -19,26 +27,44 @@ class CLIClient:
         self.db = None
         self.agent = None
         self.chat_service = None
+        self.current_session_code = None  # 保存当前会话，实现连续对话
 
     async def initialize(self) -> bool:
         print("Initializing AI RAG system...")
         try:
+            # 1. 初始化数据库连接池
+            print("  📦 Connecting to database...")
             await async_db_manager.init_async_database()
             await langchain_pool.connect()
 
-            await langchain_manager.init_langchain_manager()
+            # 2. 初始化数据库（创建表和索引）
+            print("  🗄️ Initializing database schema...")
+            await db_initializer.initialize()
 
-            async_db_context = async_db_manager.get_async_db()
-            self.db = await anext(async_db_context.__aiter__())
+            # 3. 获取数据库会话
+            print("  📝 Getting database session...")
+            async with async_db_manager.get_async_db() as session:
+                self.db = session
 
-            self.agent = await get_gal_agent()
+            # 4. 初始化所有 Langchain 组件
+            print("  🚀 Initializing Langchain components...")
+            await langchain_manager.initialize()
 
+            # 5. 获取 agent
+            print("  🎯 Loading agent...")
+            self.agent = get_gal_agent()
+
+            # 6. 创建 chat service
+            print("  💬 Creating chat service...")
             self.chat_service = ChatMessageService(self.db, self.agent)
 
-            print("System initialized successfully")
+            print("✅ System initialized successfully!")
             return True
+
         except Exception as e:
-            print(f"Initialization failed: {e}")
+            print(f"❌ Initialization failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     async def upload_document(self, filepath: str) -> None:
@@ -51,7 +77,7 @@ class CLIClient:
 
         try:
             # 获取向量存储
-            vectorstore = await langchain_manager.get_vectorstore()
+            vectorstore = langchain_manager.get_vectorstore()
 
             # 读取文件
             with open(filepath, 'r', encoding='utf-8') as f:
@@ -86,37 +112,50 @@ class CLIClient:
             print(f"Failed to process: {e}")
 
     async def ask_question(self, question: str) -> None:
-        """提问（流式响应收集）"""
+        """提问（流式响应收集）- 支持连续对话"""
         print(f"\nQuestion: {question}")
         print("Thinking...")
 
-        # 创建临时会话
-        session_code = str(uuid6.uuid7())
-        await chat_session_crud.create(self.db, session_code)
+        # 如果没有会话，创建一个新的
+        if not self.current_session_code:
+            self.current_session_code = str(uuid6.uuid7())
+            await chat_session_crud.create(self.db, self.current_session_code)
+            print(f"📝 创建新会话: {self.current_session_code}")
+        else:
+            print(f"💬 继续会话: {self.current_session_code}")
 
         full_answer = ""
         sources = []
 
-        async for chunk in self.chat_service.chat(session_code, question):
+        async for chunk in self.chat_service.chat(self.current_session_code, question):
             if chunk.startswith("data: "):
                 try:
                     import json
                     data = json.loads(chunk[6:])
-                    if data.get("event") == "message":
+                    event = data.get("event")
+
+                    if event == "message":
                         content = data["data"]["content"]
                         print(content, end="", flush=True)
                         full_answer += content
-                    elif data.get("event") == "retrieval":
+                    elif event == "reasoning":
+                        tool_info = data["data"]
+                        print(f"\n[使用工具: {tool_info.get('tool')}]", end="", flush=True)
+                    elif event == "retrieval":
                         sources.append(data["data"])
-                except:
+                    elif event == "finish":
+                        print()  # 换行
+                except Exception as e:
+                    # 忽略解析错误
                     pass
 
         print("\n")
         if sources:
-            print(f"Sources ({len(sources)}):")
+            print(f"📚 引用来源 ({len(sources)}):")
             for i, source in enumerate(sources[:3], 1):
                 filename = source.get("filename", "Unknown")
-                print(f"  {i}. {filename}")
+                similarity = source.get("similarity", 0)
+                print(f"  {i}. {filename} (相似度: {similarity:.2f})")
 
     async def interactive_mode(self) -> None:
         print("\n" + "=" * 60)
@@ -125,6 +164,7 @@ class CLIClient:
         print("Commands:")
         print("  /help     - Show this help")
         print("  /upload   - Upload a document")
+        print("  /new      - Start a new conversation session")
         print("  /exit     - Exit the program")
         print("\nJust type your question to ask.")
         print("=" * 60)
@@ -144,7 +184,13 @@ class CLIClient:
                     print("Available commands:")
                     print("  /help     - Show help")
                     print("  /upload   - Upload document")
+                    print("  /new      - Start a new conversation session")
                     print("  /exit     - Exit")
+                    continue
+
+                elif user_input.lower() == '/new':
+                    self.current_session_code = None
+                    print("✅ 已创建新会话，开始新的对话")
                     continue
 
                 elif user_input.lower() == '/upload':

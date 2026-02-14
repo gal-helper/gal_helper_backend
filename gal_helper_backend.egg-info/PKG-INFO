@@ -1,0 +1,27 @@
+Metadata-Version: 2.4
+Name: gal_helper_backend
+Version: 0.1.0
+Summary: AI Agent for Galgame Support
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: fastapi[standard]>=0.104.0
+Requires-Dist: uvicorn>=0.24.0
+Requires-Dist: asyncpg>=0.29.0
+Requires-Dist: aiohttp>=3.9.0
+Requires-Dist: python-dotenv>=1.0.0
+Requires-Dist: dashscope>=1.14.0
+Requires-Dist: pydantic-settings>=2.12.0
+Requires-Dist: sqlalchemy[asyncio]>=2.0.46
+Requires-Dist: psycopg>=3.3.2
+Requires-Dist: numpy>=1.24.0
+Requires-Dist: pydantic>=2.5.0
+Requires-Dist: openpyxl>=3.1.0
+Requires-Dist: pandas>=2.0.0
+Requires-Dist: python-multipart>=0.0.6
+Requires-Dist: scalar-fastapi>=1.6.1
+Requires-Dist: langchain>=1.2.7
+Requires-Dist: langchain-openai>=1.1.7
+Requires-Dist: langchain-community>=0.4.1
+Requires-Dist: langchain-postgres>=0.0.16
+Requires-Dist: langgraph-checkpoint-postgres>=3.0.3
+Requires-Dist: uuid6>=2025.0.1

@@ -4,7 +4,7 @@ import logging
 from fastapi import Depends
 from langgraph.graph.state import CompiledStateGraph
 from sqlalchemy.ext.asyncio import AsyncSession
-from app.core.dependencies import get_async_dbsession
+from app.core.dependencies import get_db
 from app.models.chat_info import ChatSession, ChatMessage
 from app.services.ai.agent_graph import get_gal_agent
 from app.utils.utils import UUIDUtil, SSEUtil
@@ -29,13 +29,13 @@ class ChatSessionService:
 
 # 注入工厂
 def get_chat_session_service(
-    db: AsyncSession = Depends(get_async_dbsession),
+        db: AsyncSession = Depends(get_db),
 ) -> ChatSessionService:
     return ChatSessionService(db)
 
 
 async def build_history_message(
-    chat_session: ChatSession, chat_messages: list[ChatMessage]
+        chat_session: ChatSession, chat_messages: list[ChatMessage]
 ) -> ChatHistoryMessagesResponse:
     from app.schemas.chat_info import ChatSession as ChatSessionSchema
     from app.schemas.chat_info import ChatMessage as ChatMessageSchema
@@ -95,15 +95,33 @@ class ChatMessageService:
             self.db, session_code
         )
         if not chat_session_info:
-            raise Exception("会话不存在")
+            # 如果会话不存在，创建新会话（作为后备）
+            logger.warning(f"会话不存在，创建新会话: {session_code}")
+            await chat_session_crud.create(self.db, session_code)
+            chat_session_info = await chat_session_crud.get_by_session_code(
+                self.db, session_code
+            )
+
+        # 获取当前消息ID
+        current_message_id: int = chat_session_info.current_message_id or 0
+        next_message_id: int = current_message_id + 1
+
         logger.info(
-            f"会话信息编码:{chat_session_info.chat_session_code}，当前的会话序列:{chat_session_info.current_message_id}，"
+            f"会话信息编码:{chat_session_info.chat_session_code}，当前消息ID:{current_message_id}，下一个消息ID:{next_message_id}，"
             f"用户的问题为：{ask_text}"
         )
-        current_message_id: int = chat_session_info.current_message_id
-        next_message_id: int = (
-            1 if current_message_id is None else current_message_id + 1
+
+        # 获取历史消息（用于日志）
+        all_messages = await chat_message_crud.get_all_messages_of_session(
+            self.db, chat_session_info.id
         )
+
+        if all_messages:
+            logger.info(f"找到 {len(all_messages)} 条历史消息")
+            for msg in all_messages[-3:]:  # 只显示最近3条
+                logger.debug(f"历史 - {msg.role}: {msg.message[:50]}...")
+        else:
+            logger.info("没有历史消息，这是新会话的第一条消息")
 
         yield SSEUtil.format_sse(
             event=EventType.READY,
@@ -115,15 +133,19 @@ class ChatMessageService:
 
         # --- 事件 2 update_session ---
         # 插入用户消息
-        await chat_message_crud.insert_user_message(
+        user_message_id = await chat_message_crud.insert_user_message(
             self.db, chat_session_info, current_message_id, ask_text
         )
+        logger.info(f"插入用户消息成功，ID: {user_message_id}")
+
         # 插入AI消息（但没有消息内容）
         ai_message_id: int = await chat_message_crud.insert_ai_message(
             self.db, chat_session_info, next_message_id, None
         )
-        # 更新会话信息
-        await chat_session_crud.update_message_id_of_session(
+        logger.info(f"插入AI消息成功，ID: {ai_message_id}")
+
+        # 更新会话信息到最新的消息ID
+        await chat_session_crud.update_message_id(
             self.db, chat_session_info.id, next_message_id + 1
         )
 
@@ -134,49 +156,72 @@ class ChatMessageService:
         # --- 事件 3 AI 内容流 ---
         full_response = ""
 
-        # 构建 Agent 输入
+        # 构建 Agent 输入，包含历史消息
+        # 获取当前会话的所有历史消息
+        all_messages = await chat_message_crud.get_all_messages_of_session(
+            self.db, chat_session_info.id
+        )
+
+        # 转换为 LangChain 消息格式
+        from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
+
+        messages = []
+        for msg in all_messages:
+            if msg.role == "user":
+                messages.append(HumanMessage(content=msg.message))
+            elif msg.role == "assistant":
+                messages.append(AIMessage(content=msg.message))
+            elif msg.role == "system":
+                messages.append(SystemMessage(content=msg.message))
+
+        # 添加当前用户消息（确保包含）
+        messages.append(HumanMessage(content=ask_text))
+
+        logger.info(f"向Agent发送 {len(messages)} 条消息")
+
         inputs = {
-            "input": ask_text,
-            "chat_history": await self._build_chat_history(session_code),
+            "messages": messages
         }
 
-        # 流式执行 Agent
-        async for event in self.agent.astream_events(
+        # 流式执行 Agent - 使用 updates 模式更容易处理工具调用
+        async for chunk in self.agent.astream(
                 inputs,
-                version="v2",
-                config={"configurable": {"thread_id": session_code}}
+                config={"configurable": {"thread_id": session_code}},
+                stream_mode="updates"
         ):
-            kind = event["event"]
+            # 处理不同类型的更新
+            for node_name, node_data in chunk.items():
+                # 处理消息输出
+                if "messages" in node_data:
+                    msgs = node_data["messages"]
+                    if msgs:
+                        # 获取最新的消息
+                        last_message = msgs[-1]
+                        if hasattr(last_message, "content") and last_message.content:
+                            # 只输出新增的内容
+                            new_content = last_message.content[len(full_response):]
+                            if new_content:
+                                full_response = last_message.content
+                                yield SSEUtil.format_sse(
+                                    event=EventType.MESSAGE,
+                                    data={"content": new_content}
+                                )
 
-            # 工具调用事件 - 推给前端显示
-            if kind == "on_tool_start":
-                yield SSEUtil.format_sse(
-                    event=EventType.REASONING,
-                    data={"tool": event["name"], "status": "start"}
-                )
-            elif kind == "on_tool_end":
-                yield SSEUtil.format_sse(
-                    event=EventType.REASONING,
-                    data={"tool": event["name"], "status": "end"}
-                )
-
-            # LLM 输出流
-            elif kind == "on_chat_model_stream":
-                chunk = event["data"]["chunk"]
-                if chunk.content:
-                    full_response += chunk.content
-                    yield SSEUtil.format_sse(
-                        event=EventType.MESSAGE,
-                        data={"content": chunk.content}
-                    )
+                # 处理工具调用
+                if "tools" in node_data:
+                    for tool_call in node_data["tools"]:
+                        yield SSEUtil.format_sse(
+                            event=EventType.REASONING,
+                            data={"tool": tool_call.get("name"), "status": "calling"}
+                        )
 
         # --- 事件 4 finish ---
         yield SSEUtil.format_sse(event=EventType.FINISH, data={})
 
-        logger.info(f"AI回复为：{full_response}")
+        logger.info(f"AI回复为：{full_response[:100]}...")
 
         # --- 事件 5 update_session ---
-        await chat_message_crud.update_ai_message(self.db, ai_message_id, full_response)
+        await chat_message_crud.update_message(self.db, ai_message_id, full_response)
         await self.db.commit()
         yield SSEUtil.format_sse(
             event=EventType.UPDATE_SESSION, data={"updated_at": datetime.now()}
@@ -187,8 +232,8 @@ class ChatMessageService:
 
 
 # 注入工厂
-async def get_chat_message_service(
-    db: AsyncSession = Depends(get_async_dbsession),
-    agent: CompiledStateGraph = Depends(get_gal_agent),
+def get_chat_message_service(
+        db: AsyncSession = Depends(get_db),
+        agent: CompiledStateGraph = Depends(get_gal_agent),
 ) -> ChatMessageService:
     return ChatMessageService(db, agent)
