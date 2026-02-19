@@ -18,6 +18,7 @@ app/crud/chat_info.py
 app/crud/utils.py
 app/models/__init__.py
 app/models/chat_info.py
+app/reranker/reranker.py
 app/schemas/__init__.py
 app/schemas/chat_info.py
 app/services/__init__.py

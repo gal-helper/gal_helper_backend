@@ -89,7 +89,7 @@ class ChatMessageService:
         # 3. 构建历史消息响应数据
         return await build_history_message(chat_session, chat_messages)
 
-    async def chat(self, session_code: str, ask_text: str):
+    async def chat(self, session_code: str, ask_text: str, topic: str = None):
         # --- 事件 1 ready ---
         chat_session_info: ChatSession = await chat_session_crud.get_by_session_code(
             self.db, session_code
@@ -180,7 +180,8 @@ class ChatMessageService:
         logger.info(f"向Agent发送 {len(messages)} 条消息")
 
         inputs = {
-            "messages": messages
+            "messages": messages,
+            "topic": topic,
         }
 
         # 流式执行 Agent - 使用 updates 模式更容易处理工具调用
@@ -210,6 +211,27 @@ class ChatMessageService:
                 # 处理工具调用
                 if "tools" in node_data:
                     for tool_call in node_data["tools"]:
+                        # 如果工具返回了结果（如 retrieve_documents 返回 JSON），则尝试解析并发送 retrieval 事件
+                        try:
+                            tool_name = tool_call.get("name")
+                            result = tool_call.get("result") or tool_call.get("output")
+                            if tool_name == "retrieve_documents" and result:
+                                import json as _json
+                                try:
+                                    parsed = _json.loads(result)
+                                    items = parsed.get("items") if isinstance(parsed, dict) else None
+                                    if items:
+                                        for item in items:
+                                            yield SSEUtil.format_sse(
+                                                event=EventType.RETRIEVAL,
+                                                data=item,
+                                            )
+                                        continue
+                                except Exception:
+                                    pass
+                        except Exception:
+                            pass
+
                         yield SSEUtil.format_sse(
                             event=EventType.REASONING,
                             data={"tool": tool_call.get("name"), "status": "calling"}

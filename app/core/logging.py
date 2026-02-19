@@ -1,3 +1,4 @@
+# app/core/logging.py
 import logging
 import os
 import sys
@@ -23,7 +24,10 @@ def setup_logging():
     _configure_stdout_encoding()
     # 打印到控制台和文件里，强制使用 UTF-8 编码
     stream_handler = logging.StreamHandler(sys.stdout)
-    file_handler = logging.FileHandler(config.LOG_FILE_NAME, encoding="utf-8")
+    file_handler = logging.FileHandler(config.LOG_FILE_NAME, encoding="utf-8")  # 指定 encoding
+
+    # 显式设置 stream_handler 的编码
+    stream_handler.encoding = 'utf-8'
 
     logging.basicConfig(
         level=config.LOG_LEVEL,

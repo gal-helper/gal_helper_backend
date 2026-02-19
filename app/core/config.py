@@ -26,13 +26,18 @@ class Config:
     BASE_EMBEDDING_MODEL_BASE_URL: str = os.getenv("BASE_EMBEDDING_MODEL_BASE_URL")
     BASE_EMBEDDING_API_KEY: str = os.getenv("BASE_EMBEDDING_API_KEY")
 
+    # 重排序配置
+    RERANKER_ENABLED: bool = os.getenv("RERANKER_ENABLED", "true").lower() == "true"
+    RERANKER_MODEL: str = os.getenv("RERANKER_MODEL", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+    RERANKER_DEVICE: str = os.getenv("RERANKER_DEVICE", "cpu")
+    RERANKER_BATCH_SIZE: int = int(os.getenv("RERANKER_BATCH_SIZE", "32"))
+
     DB_POOL_MIN_SIZE: int = 2
     DB_POOL_MAX_SIZE: int = 10
     VECTOR_DIMENSION: int = 768
     VECTOR_INDEX_LISTS: int = 100
-    # 索引创建控制
-    AUTO_CREATE_INDEX: bool = True  # 保持 True，让向量索引创建
-    SKIP_INDEX_CREATION: bool = False  # 保持 False
+    AUTO_CREATE_INDEX: bool = True
+    SKIP_INDEX_CREATION: bool = False
     LOG_LEVEL: str = "DEBUG"
     LOG_FORMAT: str = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
     LOG_FILE_NAME: str = "logs/app.log"
@@ -40,10 +45,3 @@ class Config:
 
 
 config = Config()
-
-if config.DEBUG:
-    print(f"📊 Database: {config.DB_HOST}:{config.DB_PORT}/{config.DB_NAME}")
-    print(f"🤖 Chat Model: {config.CHAT_MODEL_NAME}")
-    print(f"🔤 Embedding Model: {config.BASE_EMBEDDING_MODEL_NAME}")
-    print(f"🔗 ASYNC_DATABASE_URL: {config.ASYNC_DATABASE_URL}")
-    print(f"🔗 LANGCHAIN_DATABASE_URL: {config.LANGCHAIN_DATABASE_URL}")

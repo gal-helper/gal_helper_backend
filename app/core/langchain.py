@@ -56,9 +56,9 @@ class LangchainManager:
                 timeout=60,
                 max_retries=3,
             )
-            logger.info(f"✅ Chat model connected: {config.CHAT_MODEL_NAME}")
+            logger.info(f"Chat model connected: {config.CHAT_MODEL_NAME}")
         except Exception as e:
-            logger.error(f"❌ Failed to connect chat model: {e}")
+            logger.error(f"Failed to connect chat model: {e}")
             raise
 
         # Embedding 模型
@@ -71,25 +71,46 @@ class LangchainManager:
                 timeout=60,
                 max_retries=3,
             )
-            logger.info(f"✅ Embedding model connected: {config.BASE_EMBEDDING_MODEL_NAME}")
+            logger.info(f"Embedding model connected: {config.BASE_EMBEDDING_MODEL_NAME}")
         except Exception as e:
-            logger.error(f"❌ Failed to connect embedding model: {e}")
+            logger.error(f"Failed to connect embedding model: {e}")
             raise
 
     async def _init_checkpointer(self):
-        """初始化检查点 - 让 LangGraph 自己管理表"""
+        """初始化检查点 - 修复索引创建问题"""
         try:
             pool = langchain_pool.get_pool()
+
+            # 使用临时连接，开启 autocommit
+            async with pool.connection() as conn:
+                await conn.set_autocommit(True)
+
+                # 检查表是否存在
+                async with conn.cursor() as cur:
+                    await cur.execute("""
+                                      SELECT EXISTS (SELECT
+                                                     FROM information_schema.tables
+                                                     WHERE table_name = 'checkpoints')
+                                      """)
+                    exists = (await cur.fetchone())[0]
+
+                if not exists:
+                    # 如果表不存在，才创建（此时 autocommit 已开启）
+                    logger.info("Creating checkpointer tables...")
+                    temp_checkpointer = AsyncPostgresSaver(conn=conn)
+                    await temp_checkpointer.setup()
+                    logger.info("✅ Checkpointer tables created")
+                else:
+                    logger.info("✅ Checkpointer tables already exist")
+
+            # 创建用于正常操作的 checkpointer（使用连接池）
             self._checkpointer = AsyncPostgresSaver(conn=pool)
 
-            # 让 LangGraph 自己创建表结构
-            # 这会创建它期望的正确表结构
-            await self._checkpointer.setup()
-
-            logger.info("✅ Checkpointer initialized with auto-created tables")
+            logger.info("✅ Checkpointer initialized successfully")
 
         except Exception as e:
             logger.error(f"❌ Failed to initialize checkpointer: {e}")
+            logger.warning("Continuing without checkpointer - conversation history won't be saved")
             self._checkpointer = None
 
     async def _init_vectorstore(self):
@@ -109,16 +130,16 @@ class LangchainManager:
                 embedding_service=embeddings,
                 table_name="document_embeddings",
                 schema_name="public",
-                id_column="langchain_id",  # 你的 ID 列名
-                content_column="document_content",  # 你的内容列名
-                embedding_column="embedding",  # 你的向量列名
-                metadata_json_column="langchain_metadata",  # 你的元数据列名
+                id_column="langchain_id",
+                content_column="document_content",
+                embedding_column="embedding",
+                metadata_json_column="langchain_metadata",
             )
 
-            logger.info("✅ Vector store initialized")
+            logger.info("Vector store initialized")
 
         except Exception as e:
-            logger.error(f"❌ Failed to initialize vector store: {e}")
+            logger.error(f"Failed to initialize vector store: {e}")
             raise
 
     # Getter 方法 - 所有 getter 都是同步的

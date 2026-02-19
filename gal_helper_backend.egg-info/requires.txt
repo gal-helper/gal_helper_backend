@@ -19,3 +19,7 @@ langchain-community>=0.4.1
 langchain-postgres>=0.0.16
 langgraph-checkpoint-postgres>=3.0.3
 uuid6>=2025.0.1
+
+[full]
+sentence-transformers>=3.0.0
+torch>=2.1.0

@@ -14,6 +14,35 @@ from app.core.langchain import langchain_manager
 from langchain_postgres.v2.async_vectorstore import AsyncPGVectorStore
 from langchain_core.documents import Document
 
+
+def _map_topic_to_table(topic: str) -> str:
+    """将用户友好主题映射为数据库表名；如果传入已是表名则原样返回。"""
+    if not topic:
+        return None
+    t = topic.strip()
+    # 常见表名直接返回
+    known_tables = [
+        "vectorstore_resource",
+        "vectorstore_technical",
+        "vectorstore_tools",
+        "vectorstore_news",
+    ]
+    if t in known_tables:
+        return t
+
+    # 简单关键字映射（支持中文或英文关键词）
+    if any(k in t for k in ["资源", "resource"]):
+        return "vectorstore_resource"
+    if any(k in t for k in ["运行", "运行问题", "technical", "运行问题", "运行"]):
+        return "vectorstore_technical"
+    if any(k in t for k in ["工具", "软件", "tool", "tools"]):
+        return "vectorstore_tools"
+    if any(k in t for k in ["资讯", "新闻", "news", "游戏资讯"]):
+        return "vectorstore_news"
+
+    # 默认返回 None，使用默认 vectorstore
+    return None
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
@@ -22,7 +51,8 @@ logger = logging.getLogger(__name__)
 async def ask_question(
         question: str = Form(...),
         use_rag: bool = Form(True),  # 保留参数，但不使用
-        chat_message_service: ChatMessageService = Depends(get_chat_message_service)
+    chat_message_service: ChatMessageService = Depends(get_chat_message_service),
+    topic: str = Form(None),
 ):
     """
     兼容旧接口：转发到新版的 /completion 流式接口
@@ -35,7 +65,7 @@ async def ask_question(
         full_answer = ""
         sources = []
 
-        async for chunk in chat_message_service.chat(session_code, question):
+        async for chunk in chat_message_service.chat(session_code, question, topic=_map_topic_to_table(topic) or topic):
             # 解析 SSE 格式
             if chunk.startswith("data: "):
                 try:
@@ -65,7 +95,8 @@ async def ask_question(
 @router.post("/upload")
 async def upload_document(
         file: UploadFile = File(...),
-        vectorstore: AsyncPGVectorStore = Depends(lambda: langchain_manager.get_vectorstore())
+    vectorstore: AsyncPGVectorStore = Depends(lambda: langchain_manager.get_vectorstore()),
+    topic: str = Form(None),
 ):
     tmp_path = None
     try:
@@ -98,7 +129,16 @@ async def upload_document(
                 )
             )
 
-        ids = await vectorstore.aadd_documents(docs)
+        # 如果传入了 topic（或 table 名），尝试使用该表保存
+        table_name = _map_topic_to_table(topic)
+        if table_name:
+            try:
+                vs = await langchain_manager.async_get_vectorstore_for_table(table_name)
+                ids = await vs.aadd_documents(docs)
+            except Exception:
+                ids = await vectorstore.aadd_documents(docs)
+        else:
+            ids = await vectorstore.aadd_documents(docs)
 
         return {
             "success": True,
@@ -120,9 +160,10 @@ async def completion(
         chatSessionCode: str,
         askText: str,
         chat_message_service: ChatMessageService = Depends(get_chat_message_service),
+        topic: str = None,
 ):
     return StreamingResponse(
-        chat_message_service.chat(chatSessionCode, askText),
+        chat_message_service.chat(chatSessionCode, askText, topic=_map_topic_to_table(topic) or topic),
         media_type="text/event-stream",
     )
 

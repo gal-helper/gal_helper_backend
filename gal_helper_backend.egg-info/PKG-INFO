@@ -25,3 +25,6 @@ Requires-Dist: langchain-community>=0.4.1
 Requires-Dist: langchain-postgres>=0.0.16
 Requires-Dist: langgraph-checkpoint-postgres>=3.0.3
 Requires-Dist: uuid6>=2025.0.1
+Provides-Extra: full
+Requires-Dist: sentence-transformers>=3.0.0; extra == "full"
+Requires-Dist: torch>=2.1.0; extra == "full"
