@@ -129,8 +129,17 @@ class CLIClient:
                 self.db = session
 
             await langchain_manager.initialize()
-            self.agent = get_gal_agent()
-            self.chat_service = ChatMessageService(self.db, self.agent)
+            
+            # 尝试创建 agent，但如果失败则继续（使用递归检索代替）
+            try:
+                self.agent = get_gal_agent()
+                self.safe_print("✅ Agent created successfully")
+            except Exception as agent_error:
+                self.safe_print(f"⚠️  Warning: Agent creation failed, using retrieval mode only: {agent_error}")
+                self.agent = None
+            
+            if self.agent:
+                self.chat_service = ChatMessageService(self.db, self.agent)
             
             # 初始化递归检索器
             self.recursive_retriever = RecursiveRetriever(
