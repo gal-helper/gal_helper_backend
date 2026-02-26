@@ -1,10 +1,9 @@
-# app/services/agent_tools.py
+"""这里给出一些工具参考，可自行添加"""
 from langchain_core.tools import tool
 
 @tool
 async def search_galgame_info(game_name: str):
     """当用户询问特定 Galgame 的资讯、发行日期或基本信息时使用。"""
-    # 这里的逻辑可以去调你自己的 CRUD 或外部 API
     return f"{game_name} 是一款非常经典的作品，发行于..."
 
 @tool

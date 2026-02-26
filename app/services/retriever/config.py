@@ -15,6 +15,12 @@ class RecursiveRetrieverConfig:
     max_recursion_depth: int = 3
     """最大递归深度（1=单层，2=两层，3=三层）"""
     
+    max_total_documents: int = 100
+    """最大总文档数（防止内存溢出）"""
+    
+    max_query_attempts: int = 20
+    """最大查询次数（防止无限查询）"""
+    
     initial_k: int = 10
     """初始检索返回的文档数"""
     
@@ -70,6 +76,8 @@ class RecursiveRetrieverPresets:
         return RecursiveRetrieverConfig(
             enable_recursion=True,
             max_recursion_depth=2,
+            max_total_documents=40,
+            max_query_attempts=5,         # 最多 5 次查询 = 2 秒
             initial_k=5,
             intermediate_k=3,
             final_k=3,
@@ -83,6 +91,8 @@ class RecursiveRetrieverPresets:
         return RecursiveRetrieverConfig(
             enable_recursion=True,
             max_recursion_depth=3,
+            max_total_documents=80,
+            max_query_attempts=10,        # 最多 10 次查询 = 4 秒
             initial_k=10,
             intermediate_k=5,
             final_k=5,
@@ -96,6 +106,8 @@ class RecursiveRetrieverPresets:
         return RecursiveRetrieverConfig(
             enable_recursion=True,
             max_recursion_depth=4,
+            max_total_documents=150,
+            max_query_attempts=15,        # 最多 15 次查询 = 6 秒
             initial_k=15,
             intermediate_k=8,
             final_k=5,
