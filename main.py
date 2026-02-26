@@ -1,9 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from app.api.v1 import api_router
 from app.core.logging import setup_logging
 from app.core.lifespan import lifespan
-from scalar_fastapi import get_scalar_api_reference
 
 from app.utils.exception_handlers import register_exception_handlers
 
@@ -15,13 +15,14 @@ app = FastAPI(
     description="API for AI RAG Question Answering System",
     version="1.0.0",
     lifespan=lifespan,
-    docs_url=None,
-    redoc_url=None,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
+
 # 注册全局异常处理
 register_exception_handlers(app)
 
-# 2. 配置中间件，目前有跨域中间件
+# 2. 配置中间件
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -34,18 +35,29 @@ app.add_middleware(
 app.include_router(api_router, prefix="/api/v1")
 
 
-# 使用scalar作为docs，能好看点
-@app.get("/docs", include_in_schema=False)
-async def scalar_docs():
-    return get_scalar_api_reference(
-        openapi_url=app.openapi_url,
-        title="API Docs",
-    )
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <html>
+        <head>
+            <title>Gal Helper API</title>
+        </head>
+        <body>
+            <h1>Gal Helper API 运行中</h1>
+            <p>访问以下地址查看 API 文档：</p>
+            <ul>
+                <li><a href="/docs">/docs - Swagger UI</a></li>
+                <li><a href="/redoc">/redoc - ReDoc</a></li>
+            </ul>
+        </body>
+    </html>
+    """
 
 
-@app.get("/redoc", include_in_schema=False)
-async def redoc_html():
-    return get_scalar_api_reference(
+@app.get("/docs")
+async def swagger_ui():
+    from fastapi.openapi.docs import get_swagger_ui_html
+    return get_swagger_ui_html(
         openapi_url=app.openapi_url,
         title="API Docs",
     )

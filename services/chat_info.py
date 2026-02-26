@@ -72,37 +72,35 @@ class ChatMessageService:
 
     async def get_history_message(self, session_code: str):
         logger.info(f"获取会话编码为：{session_code}的历史消息")
-        # 1. 查询获取会话信息
         chat_session = await chat_session_crud.get_by_session_code(
             self.db, session_code
         )
         if not chat_session:
             logger.error(f"会话编码为：{session_code}的会话不存在")
             raise Exception("会话不存在")
-        # 2. 根据会话id查询所有消息
+        
         chat_messages: list = await chat_message_crud.get_all_messages_of_session(
             self.db, chat_session.id
         )
         if not chat_messages:
             logger.info(f"会话编码为：{session_code}的会话没有历史消息")
             chat_messages = []
-        # 3. 构建历史消息响应数据
+        
         return await build_history_message(chat_session, chat_messages)
 
-    async def chat(self, session_code: str, ask_text: str, topic: str = None):
+    async def chat(self, session_code: str, ask_text: str):
+        """单表模式：不再使用 topic 参数"""
         # --- 事件 1 ready ---
         chat_session_info: ChatSession = await chat_session_crud.get_by_session_code(
             self.db, session_code
         )
         if not chat_session_info:
-            # 如果会话不存在，创建新会话（作为后备）
             logger.warning(f"会话不存在，创建新会话: {session_code}")
             await chat_session_crud.create(self.db, session_code)
             chat_session_info = await chat_session_crud.get_by_session_code(
                 self.db, session_code
             )
 
-        # 获取当前消息ID
         current_message_id: int = chat_session_info.current_message_id or 0
         next_message_id: int = current_message_id + 1
 
@@ -111,14 +109,13 @@ class ChatMessageService:
             f"用户的问题为：{ask_text}"
         )
 
-        # 获取历史消息（用于日志）
         all_messages = await chat_message_crud.get_all_messages_of_session(
             self.db, chat_session_info.id
         )
 
         if all_messages:
             logger.info(f"找到 {len(all_messages)} 条历史消息")
-            for msg in all_messages[-3:]:  # 只显示最近3条
+            for msg in all_messages[-3:]:
                 logger.debug(f"历史 - {msg.role}: {msg.message[:50]}...")
         else:
             logger.info("没有历史消息，这是新会话的第一条消息")
@@ -132,19 +129,16 @@ class ChatMessageService:
         )
 
         # --- 事件 2 update_session ---
-        # 插入用户消息
         user_message_id = await chat_message_crud.insert_user_message(
             self.db, chat_session_info, current_message_id, ask_text
         )
         logger.info(f"插入用户消息成功，ID: {user_message_id}")
 
-        # 插入AI消息（但没有消息内容）
         ai_message_id: int = await chat_message_crud.insert_ai_message(
             self.db, chat_session_info, next_message_id, None
         )
         logger.info(f"插入AI消息成功，ID: {ai_message_id}")
 
-        # 更新会话信息到最新的消息ID
         await chat_session_crud.update_message_id(
             self.db, chat_session_info.id, next_message_id + 1
         )
@@ -156,13 +150,10 @@ class ChatMessageService:
         # --- 事件 3 AI 内容流 ---
         full_response = ""
 
-        # 构建 Agent 输入，包含历史消息
-        # 获取当前会话的所有历史消息
         all_messages = await chat_message_crud.get_all_messages_of_session(
             self.db, chat_session_info.id
         )
 
-        # 转换为 LangChain 消息格式
         from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
         messages = []
@@ -174,32 +165,26 @@ class ChatMessageService:
             elif msg.role == "system":
                 messages.append(SystemMessage(content=msg.message))
 
-        # 添加当前用户消息（确保包含）
         messages.append(HumanMessage(content=ask_text))
 
         logger.info(f"向Agent发送 {len(messages)} 条消息")
 
         inputs = {
             "messages": messages,
-            "topic": topic,
         }
 
-        # 流式执行 Agent - 使用 updates 模式更容易处理工具调用
+        # 流式执行 Agent
         async for chunk in self.agent.astream(
                 inputs,
                 config={"configurable": {"thread_id": session_code}},
                 stream_mode="updates"
         ):
-            # 处理不同类型的更新
             for node_name, node_data in chunk.items():
-                # 处理消息输出
                 if "messages" in node_data:
                     msgs = node_data["messages"]
                     if msgs:
-                        # 获取最新的消息
                         last_message = msgs[-1]
                         if hasattr(last_message, "content") and last_message.content:
-                            # 只输出新增的内容
                             new_content = last_message.content[len(full_response):]
                             if new_content:
                                 full_response = last_message.content
@@ -208,10 +193,8 @@ class ChatMessageService:
                                     data={"content": new_content}
                                 )
 
-                # 处理工具调用
                 if "tools" in node_data:
                     for tool_call in node_data["tools"]:
-                        # 如果工具返回了结果（如 retrieve_documents 返回 JSON），则尝试解析并发送 retrieval 事件
                         try:
                             tool_name = tool_call.get("name")
                             result = tool_call.get("result") or tool_call.get("output")
