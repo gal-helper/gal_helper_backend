@@ -1,168 +1,144 @@
-# app/core/langchain.py
+"""
+LangChain 核心模块管理
+单表模式：所有文档存储到 ai_documents 表
+"""
 from typing import Optional
-from langchain.chat_models import init_chat_model
-from langchain.embeddings import init_embeddings
-from langchain_core.embeddings import Embeddings
-from langchain_core.language_models import BaseChatModel
-from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-from langchain_postgres.v2.async_vectorstore import AsyncPGVectorStore
-from langchain_postgres.v2.engine import PGEngine
-
-from app.core.config import config
-from app.core.db import async_db_manager, langchain_pool, db_initializer
 import logging
 
 logger = logging.getLogger(__name__)
 
+# LangChain 0.1.x - 使用 langchain_openai
+try:
+    from langchain_openai import ChatOpenAI
+    _has_chat_openai = True
+except ImportError:
+    _has_chat_openai = False
+    ChatOpenAI = None
 
-class LangchainManager:
+try:
+    from langchain_community.embeddings import OllamaEmbeddings
+    _has_ollama_embeddings = True
+except ImportError:
+    _has_ollama_embeddings = False
+    OllamaEmbeddings = None
+
+from app.core.config import config
+from app.core.db import db_initializer
+
+
+class SimpleLangchainManager:
+    """Langchain 管理器 - 单表模式"""
+    
     def __init__(self):
-        self._chatModel: Optional[BaseChatModel] = None
-        self._embeddingModel: Optional[Embeddings] = None
-        self._checkpointer: Optional[AsyncPostgresSaver] = None
-        self._vectorstore: Optional[AsyncPGVectorStore] = None
+        self._chatModel = None
+        self._embeddingModel = None
+        self._vectorstore = None
         self._initialized = False
 
     async def initialize(self):
-        """初始化所有 Langchain 组件"""
+        """初始化 Langchain 组件"""
         if self._initialized:
             return
 
         logger.info("Initializing Langchain components...")
-
-        # 1. 确保数据库已初始化
+        
+        # 确保数据库已初始化
         await db_initializer.initialize()
-
-        # 2. 初始化各组件
+        
+        # 初始化模型
         self._init_models()
-        await self._init_checkpointer()
-        await self._init_vectorstore()
-
+        
         self._initialized = True
-        logger.info("Langchain components initialized successfully")
+        logger.info("✅ Langchain components initialized successfully")
 
     def _init_models(self):
         """初始化模型"""
-        # Chat 模型
-        try:
-            logger.info(f"Connecting to chat model: {config.CHAT_MODEL_NAME}")
-            self._chatModel = init_chat_model(
-                model=config.CHAT_MODEL_NAME,
-                model_provider="openai",
-                base_url=config.CHAT_MODEL_BASE_URL,
-                api_key=config.CHAT_MODEL_API_KEY or "sk-xxx",
-                temperature=0.7,
-                max_tokens=2000,
-                timeout=60,
-                max_retries=3,
-            )
-            logger.info(f"Chat model connected: {config.CHAT_MODEL_NAME}")
-        except Exception as e:
-            logger.error(f"Failed to connect chat model: {e}")
-            raise
+        # Chat 模型 - DeepSeek (使用 OpenAI 兼容接口)
+        if ChatOpenAI and config.CHAT_MODEL_NAME:
+            try:
+                logger.info(f"Connecting to chat model: {config.CHAT_MODEL_NAME}")
+                self._chatModel = ChatOpenAI(
+                    model=config.CHAT_MODEL_NAME,
+                    base_url=config.CHAT_MODEL_BASE_URL,
+                    api_key=config.CHAT_MODEL_API_KEY or "sk-xxx",
+                    temperature=0.7,
+                    max_tokens=2000,
+                    request_timeout=60,
+                    max_retries=3,
+                )
+                logger.info(f"✅ Chat model connected: {config.CHAT_MODEL_NAME}")
+            except Exception as e:
+                logger.warning(f"Failed to connect chat model: {e}")
+                self._chatModel = None
 
-        # Embedding 模型
-        try:
-            logger.info(f"Connecting to embedding model: {config.BASE_EMBEDDING_MODEL_NAME}")
-            self._embeddingModel = init_embeddings(
-                model=f"openai:{config.BASE_EMBEDDING_MODEL_NAME}",
-                base_url=config.BASE_EMBEDDING_MODEL_BASE_URL,
-                api_key=config.BASE_EMBEDDING_API_KEY or "sk-xxx",
-                timeout=60,
-                max_retries=3,
-            )
-            logger.info(f"Embedding model connected: {config.BASE_EMBEDDING_MODEL_NAME}")
-        except Exception as e:
-            logger.error(f"Failed to connect embedding model: {e}")
-            raise
+        # Embedding 模型 - Ollama
+        if OllamaEmbeddings and config.BASE_EMBEDDING_MODEL_NAME:
+            try:
+                logger.info(f"Connecting to embedding model: {config.BASE_EMBEDDING_MODEL_NAME}")
+                self._embeddingModel = OllamaEmbeddings(
+                    model=config.BASE_EMBEDDING_MODEL_NAME,
+                    base_url=config.BASE_EMBEDDING_MODEL_BASE_URL,
+                )
+                logger.info(f"✅ Embedding model connected: {config.BASE_EMBEDDING_MODEL_NAME}")
+            except Exception as e:
+                logger.warning(f"Failed to connect embedding model: {e}")
+                self._embeddingModel = None
 
-    async def _init_checkpointer(self):
-        """初始化检查点 - 修复索引创建问题"""
-        try:
-            pool = langchain_pool.get_pool()
-
-            # 使用临时连接，开启 autocommit
-            async with pool.connection() as conn:
-                await conn.set_autocommit(True)
-
-                # 检查表是否存在
-                async with conn.cursor() as cur:
-                    await cur.execute("""
-                                      SELECT EXISTS (SELECT
-                                                     FROM information_schema.tables
-                                                     WHERE table_name = 'checkpoints')
-                                      """)
-                    exists = (await cur.fetchone())[0]
-
-                if not exists:
-                    # 如果表不存在，才创建（此时 autocommit 已开启）
-                    logger.info("Creating checkpointer tables...")
-                    temp_checkpointer = AsyncPostgresSaver(conn=conn)
-                    await temp_checkpointer.setup()
-                    logger.info("✅ Checkpointer tables created")
-                else:
-                    logger.info("✅ Checkpointer tables already exist")
-
-            # 创建用于正常操作的 checkpointer（使用连接池）
-            self._checkpointer = AsyncPostgresSaver(conn=pool)
-
-            logger.info("✅ Checkpointer initialized successfully")
-
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize checkpointer: {e}")
-            logger.warning("Continuing without checkpointer - conversation history won't be saved")
-            self._checkpointer = None
-
-    async def _init_vectorstore(self):
-        """初始化向量存储"""
-        try:
-            embeddings = self.get_base_embeddings()
-            async_engine = async_db_manager.async_engine
-
-            if not async_engine:
-                raise RuntimeError("Async engine not initialized")
-
-            pg_engine = PGEngine.from_engine(async_engine)
-
-            # 明确指定所有列名，与你创建的表结构匹配
-            self._vectorstore = await AsyncPGVectorStore.create(
-                engine=pg_engine,
-                embedding_service=embeddings,
-                table_name="document_embeddings",
-                schema_name="public",
-                id_column="langchain_id",
-                content_column="document_content",
-                embedding_column="embedding",
-                metadata_json_column="langchain_metadata",
-            )
-
-            logger.info("Vector store initialized")
-
-        except Exception as e:
-            logger.error(f"Failed to initialize vector store: {e}")
-            raise
-
-    # Getter 方法 - 所有 getter 都是同步的
-    def get_chat_model(self) -> BaseChatModel:
+    def get_chat_model(self):
+        """获取 Chat 模型"""
         if not self._chatModel:
-            raise RuntimeError("Chat model not initialized")
+            logger.warning("Chat model not available")
+            return None
         return self._chatModel
 
-    def get_base_embeddings(self) -> Embeddings:
+    def get_base_embeddings(self):
+        """获取 Embedding 模型"""
         if not self._embeddingModel:
-            raise RuntimeError("Embedding model not initialized")
+            logger.warning("Embedding model not available")
+            return None
         return self._embeddingModel
 
-    def get_checkpointer(self) -> AsyncPostgresSaver:
-        if not self._checkpointer:
-            raise RuntimeError("Checkpointer not initialized")
-        return self._checkpointer
+    def get_vectorstore(self):
+        """获取向量存储 - 单表模式"""
+        if self._vectorstore:
+            return self._vectorstore
+            
+        try:
+            from langchain_postgres import PGVector
+            
+            connection_string = config.LANGCHAIN_DATABASE_URL
+            if not connection_string:
+                logger.error("❌ LANGCHAIN_DATABASE_URL not configured in .env")
+                return None
+            
+            embeddings = self.get_base_embeddings()
+            if not embeddings:
+                logger.error("❌ Embedding model not available")
+                return None
+            
+            # 单表：collection_name 固定为 ai_documents
+            self._vectorstore = PGVector(
+                embeddings=embeddings,
+                connection=connection_string,
+                collection_name="ai_documents",
+                async_mode=True,
+            )
+            
+            logger.info("✅ Connected to PostgreSQL vectorstore (single table)")
+            return self._vectorstore
+        
+        except ImportError as e:
+            logger.error(f"❌ langchain_postgres not installed: {e}")
+            return None
+        except Exception as e:
+            logger.error(f"❌ Failed to initialize vectorstore: {type(e).__name__}: {e}")
+            return None
 
-    def get_vectorstore(self) -> AsyncPGVectorStore:
-        if not self._vectorstore:
-            raise RuntimeError("Vector store not initialized")
-        return self._vectorstore
+    def get_checkpointer(self):
+        """获取检查点器"""
+        logger.warning("Checkpointer not available")
+        return None
 
 
-# 创建全局管理器
-langchain_manager = LangchainManager()
+# 全局管理器实例
+langchain_manager = SimpleLangchainManager()
