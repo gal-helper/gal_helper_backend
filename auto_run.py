@@ -1,147 +1,115 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+Gal Helper Backend - 自动启动脚本
+使用 uvicorn 启动 FastAPI 服务
+"""
+
 import os
 import sys
 import subprocess
+import signal
+import time
+import socket
 
-def get_user_input():
-    print("AI RAG API Systemd")
-    print("=" * 50)
-    
-    project_path = os.getcwd()
-    python_path = "/root/miniconda3/bin/python"
-    service_name = "ai-rag-api"
-    
-    return {
-        'project_path': project_path,
-        'python_path': python_path,
-        'service_name': service_name
-    }
+# 配置
+HOST = "0.0.0.0"
+PORT = 8000
+APP_MODULE = "app.main:app"
+LOG_FILE = "auto_run.log"
 
-def create_service_file(config):
-    service_content = f"""[Unit]
-Description=AI RAG API Service
-After=network.target
+# 添加当前目录到 PYTHONPATH
+PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+os.environ["PYTHONPATH"] = PROJECT_ROOT
 
-[Service]
-User=root
-WorkingDirectory={config['project_path']}
-ExecStart={config['python_path']} api_server.py
-Restart=always
-RestartSec=3
-StandardOutput=syslog
-StandardError=syslog
-SyslogIdentifier={config['service_name']}
 
-[Install]
-WantedBy=multi-user.target
-"""
-    
-    service_file = f"/etc/systemd/system/{config['service_name']}.service"
-    
-    print(f"\n正在创建服务文件: {service_file}")
-    print("-" * 40)
-    print(service_content)
-    print("-" * 40)
-    
+def is_port_in_use(port: int) -> bool:
+    """检查端口是否被占用"""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        return s.connect_ex(('localhost', port)) == 0
+
+
+def get_process_by_port(port: int) -> int:
+    """获取占用指定端口的进程 PID"""
     try:
-        with open(service_file, 'w') as f:
-            f.write(service_content)
-        print(f"服务文件创建成功")
-        return True
-    except PermissionError:
-        print(f"权限不足，请使用 sudo 运行此脚本")
-        return False
-    except Exception as e:
-        print(f"创建失败: {e}")
-        return False
+        result = subprocess.run(
+            f"lsof -ti:{port}".split(),
+            capture_output=True,
+            text=True
+        )
+        if result.stdout:
+            return int(result.stdout.strip().split('\n')[0])
+    except:
+        pass
+    return None
 
-def setup_service(config):
-    service_name = config['service_name']
+
+def kill_process_on_port(port: int):
+    """杀掉占用指定端口的进程"""
+    pid = get_process_by_port(port)
+    if pid:
+        print(f"⚠️  端口 {port} 被占用，杀掉进程 {pid}")
+        try:
+            os.kill(pid, signal.SIGTERM)
+            time.sleep(1)
+        except:
+            pass
+
+
+def start_server():
+    """启动 uvicorn 服务器"""
+    # 检查端口
+    if is_port_in_use(PORT):
+        print(f"❌ 端口 {PORT} 已被占用")
+        kill_process_on_port(PORT)
     
-    commands = [
-        ("重新加载 systemd", f"systemctl daemon-reload"),
-        ("启用开机启动", f"systemctl enable {service_name}"),
-        ("启动服务", f"systemctl start {service_name}"),
-        ("检查服务状态", f"systemctl status {service_name} --no-pager -l")
+    print(f"🚀 启动 Gal Helper API 服务...")
+    print(f"   项目路径: {PROJECT_ROOT}")
+    print(f"   监听地址: http://{HOST}:{PORT}")
+    print(f"   API 文档: http://{HOST}:{PORT}/docs")
+    print(f"   日志文件: {LOG_FILE}")
+    print("-" * 50)
+    
+    # 设置环境变量
+    env = os.environ.copy()
+    env["PYTHONPATH"] = PROJECT_ROOT
+    
+    # 启动命令
+    cmd = [
+        sys.executable, "-m", "uvicorn",
+        APP_MODULE,
+        "--host", HOST,
+        "--port", str(PORT),
+        "--reload"
     ]
     
-    print(f"\n正在配置服务: {service_name}")
-    print("=" * 50)
-    
-    for description, cmd in commands:
-        print(f"\n{description}...")
-        print(f"命令: {cmd}")
+    # 重定向日志到文件
+    with open(LOG_FILE, "a", encoding="utf-8") as log_file:
+        process = subprocess.Popen(
+            cmd,
+            stdout=log_file,
+            stderr=subprocess.STDOUT,
+            cwd=PROJECT_ROOT,
+            env=env
+        )
+        
+        print(f"✅ 服务已启动! PID: {process.pid}")
+        print(f"   按 Ctrl+C 停止服务")
+        print("-" * 50)
         
         try:
-            result = subprocess.run(
-                cmd, 
-                shell=True, 
-                capture_output=True, 
-                text=True
-            )
-            
-            if result.stdout:
-                print("输出:")
-                for line in result.stdout.strip().split('\n'):
-                    if line.strip():
-                        print(f"     {line}")
-            
-            if result.stderr and "Warning" not in result.stderr:
-                print(f"   ⚠️ 错误: {result.stderr.strip()}")
-            
-            if result.returncode != 0 and description != "检查服务状态":
-                print(f"命令执行失败")
-                return False
-                
-        except Exception as e:
-            print(f"执行异常: {e}")
-            return False
-    
-    return True
+            process.wait()
+        except KeyboardInterrupt:
+            print("\n🛑 停止服务...")
+            process.terminate()
+            process.wait()
+            print("✅ 服务已停止")
 
-def main():
-    if os.geteuid() != 0:
-        print("请使用 sudo 运行此脚本:")
-        print(f"   sudo python3 {sys.argv[0]}")
-        sys.exit(1)
-    
-    config = get_user_input()
-    
-    if not os.path.exists(os.path.join(config['project_path'], 'api_server.py')):
-        print(f"\n错误: 在 {config['project_path']} 中未找到 api_server.py")
-        print("请确认项目路径是否正确")
-        sys.exit(1)
-    
-    if not os.path.exists(config['python_path']):
-        print(f"\n错误: Python 路径不存在: {config['python_path']}")
-        print("请使用 'which python3' 命令查看正确的路径")
-        sys.exit(1)
-    
-    print(f"\n配置摘要:")
-    print(f"   项目路径: {config['project_path']}")
-    print(f"   Python路径: {config['python_path']}")
-    print(f"   服务名称: {config['service_name']}")
-    
-    confirm = input("\n是否继续? (y/n): ").strip().lower()
-    if confirm not in ['y', 'yes']:
-        print("操作已取消")
-        sys.exit(0)
-    
-    # 执行配置
-    if create_service_file(config) and setup_service(config):
-        print("\n" + "=" * 50)
-        print("服务配置完成!")
-        print("=" * 50)
-        print(f"\n服务名称: {config['service_name']}")
-        print("已设置为开机自启")
-        print("服务已启动")
-        print(f"\n管理命令:")
-        print(f"查看状态: sudo systemctl status {config['service_name']}")
-        print(f"查看日志: sudo journalctl -u {config['service_name']} -f")
-        print(f"重启服务: sudo systemctl restart {config['service_name']}")
-        print(f"停止服务: sudo systemctl stop {config['service_name']}")
-        print(f"\n访问地址: http://101.132.36.117:8000")
-    else:
-        print("\n配置失败，请检查错误信息")
 
 if __name__ == "__main__":
-    main()
+    # 确保日志目录存在
+    os.makedirs("logs", exist_ok=True)
+    
+    start_server()

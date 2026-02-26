@@ -1,10 +1,6 @@
 """
-Refactored AI RAG CLI client with Recursive Retrieval
-- 精简重复定义
-- 四个预筛选接口（资源查找/运行问题/相关工具与软件/游戏资讯）
-- 基于余弦相似度（TF-IDF）的高级重排序（rerank）功能，支持中文
-- 递归检索（Recursive Retrieval）：多层级文档检索，自动生成子问题
-- 简单的会话记忆持久化到本地文件夹（session_memory）
+AI RAG CLI client - 单表模式
+所有文档存储到 ai_documents 表
 """
 
 import asyncio
@@ -17,7 +13,6 @@ import traceback
 import json
 import difflib
 from typing import Optional, List
-from enum import Enum
 from datetime import datetime
 from pathlib import Path
 import numpy as np
@@ -48,7 +43,6 @@ root_logger.setLevel(logging.INFO)
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Local project imports (kept the same names as original project)
 from app.services.chat_info import ChatMessageService
 from app.core.langchain import langchain_manager
 from app.core.db import async_db_manager, langchain_pool, db_initializer
@@ -60,44 +54,18 @@ import uuid6
 from sqlalchemy import text
 
 
-# ==================== 主题枚举（四个接口） ====================
-class DialogTopic(Enum):
-    RESOURCE = "资源查找"
-    TECHNICAL = "运行问题"
-    TOOLS = "相关工具与软件"
-    NEWS = "游戏资讯"
-
-    @classmethod
-    def get_table_name(cls, topic: 'DialogTopic') -> str:
-        mapping = {
-            cls.RESOURCE: "vectorstore_resource",
-            cls.TECHNICAL: "vectorstore_technical",
-            cls.TOOLS: "vectorstore_tools",
-            cls.NEWS: "vectorstore_news",
-        }
-        return mapping[topic]
-
-    @classmethod
-    def from_string(cls, value: str) -> Optional['DialogTopic']:
-        for topic in cls:
-            if topic.value == value or topic.name.lower() == str(value).lower():
-                return topic
-        return None
-
-
 class CLIClient:
 
-    def __init__(self, topic: DialogTopic = DialogTopic.RESOURCE, workspace_root: Optional[str] = None):
+    def __init__(self, workspace_root: Optional[str] = None):
         self.db = None
         self.agent = None
         self.chat_service = None
         self.current_session_code = None
-        self.current_topic = topic
         self.logger = logging.getLogger(__name__)
         self.workspace_root = Path(workspace_root or os.getcwd())
-        self.memory_dir = self.workspace_root / 'refactor_cli_client' / 'session_memory'
+        self.memory_dir = self.workspace_root / 'session_memory'
         self.memory_dir.mkdir(parents=True, exist_ok=True)
-        
+
         # 递归检索配置
         self.recursive_retrieval_config = RecursiveRetrieverPresets.balanced()
         self.recursive_retriever = None
@@ -116,37 +84,35 @@ class CLIClient:
             print(*new_args, **kwargs)
 
     async def initialize(self) -> bool:
-        self.safe_print("🚀 Initializing AI RAG system with recursive retrieval support...")
-        self.safe_print(f"📌 Current Topic: {self.current_topic.value}")
+        self.safe_print("🚀 Initializing AI RAG system (单表模式)...")
         self.safe_print(f"🔄 Recursive Retrieval: {'Enabled' if self.enable_recursive_retrieval else 'Disabled'}")
         try:
             await async_db_manager.init_async_database()
             await langchain_pool.connect()
             await db_initializer.initialize()
-            await self._create_topic_tables()
 
             async with async_db_manager.get_async_db() as session:
                 self.db = session
 
             await langchain_manager.initialize()
-            
-            # 尝试创建 agent，但如果失败则继续（使用递归检索代替）
+
+            # 尝试创建 agent
             try:
                 self.agent = get_gal_agent()
                 self.safe_print("✅ Agent created successfully")
             except Exception as agent_error:
-                self.safe_print(f"⚠️  Warning: Agent creation failed, using retrieval mode only: {agent_error}")
+                self.safe_print(f"⚠️  Warning: Agent creation failed: {agent_error}")
                 self.agent = None
-            
+
             if self.agent:
                 self.chat_service = ChatMessageService(self.db, self.agent)
-            
+
             # 初始化递归检索器
             self.recursive_retriever = RecursiveRetriever(
                 config=self.recursive_retrieval_config,
                 vectorstore=langchain_manager.get_vectorstore(),
             )
-            
+
             self.safe_print("✅ System initialized successfully!")
             return True
         except Exception as e:
@@ -154,48 +120,13 @@ class CLIClient:
             self.safe_print(traceback.format_exc())
             return False
 
-    async def _create_topic_tables(self) -> None:
-        async with async_db_manager.get_async_db() as session:
-            try:
-                for topic in DialogTopic:
-                    table_name = DialogTopic.get_table_name(topic)
-                    result = await session.execute(
-                        text(f"SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_name = '{table_name}')")
-                    )
-                    if not result.scalar():
-                        await session.execute(
-                            text(f"""
-                                CREATE TABLE {table_name} (
-                                    id SERIAL PRIMARY KEY,
-                                    content TEXT NOT NULL,
-                                    embedding vector(1536),
-                                    filename VARCHAR(255),
-                                    topic VARCHAR(50),
-                                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                                    metadata JSONB
-                                )
-                            """ )
-                        )
-                        await session.execute(
-                            text(f"CREATE INDEX idx_{table_name}_embedding ON {table_name} USING ivfflat (embedding vector_cosine_ops)")
-                        )
-                        self.logger.info(f"Created table: {table_name}")
-                await session.commit()
-            except Exception as e:
-                self.logger.warning(f"Table creation issue (may already exist): {e}")
-                await session.rollback()
-
-    async def upload_document(self, filepath: str, target_topic: Optional[DialogTopic] = None) -> None:
+    async def upload_document(self, filepath: str) -> None:
+        """上传单个文件"""
         if not os.path.exists(filepath):
             self.safe_print(f"❌ Error: File not found: {filepath}")
             return
 
-        topic = target_topic or self.current_topic
-        table_name = DialogTopic.get_table_name(topic)
-
         self.safe_print(f"\n📄 Processing document: {filepath}")
-        self.safe_print(f"   📌 Topic: {topic.value}")
-        self.safe_print(f"   📊 Table: {table_name}")
 
         try:
             vectorstore = langchain_manager.get_vectorstore()
@@ -215,8 +146,6 @@ class CLIClient:
                     metadata={
                         "filename": os.path.basename(filepath),
                         "chunk": idx,
-                        "topic": topic.value,
-                        "table": table_name,
                         "uploaded_at": datetime.now().isoformat()
                     }
                 )
@@ -226,117 +155,96 @@ class CLIClient:
             ids = await vectorstore.aadd_documents(docs)
 
             self.safe_print(f"\n✅ Successfully processed: {os.path.basename(filepath)}")
-            self.safe_print(f"   ✓ Chunks: {len(ids)}")
-            self.safe_print(f"   ✓ Topic: {topic.value}")
-            self.safe_print(f"   ✓ Stored in: {table_name}\n")
+            self.safe_print(f"   ✓ Chunks: {len(ids)}\n")
 
         except Exception as e:
             self.safe_print(f"❌ Failed to process: {e}")
             self.safe_print(traceback.format_exc())
 
+    async def upload_directory(self, dirpath: str, extensions=None) -> None:
+        """上传整个目录"""
+        if extensions is None:
+            extensions = ['.txt']
+        
+        dir_path = Path(dirpath)
+        if not dir_path.exists() or not dir_path.is_dir():
+            self.safe_print(f"❌ Error: Directory not found: {dirpath}")
+            return
+        
+        # 获取所有匹配的文件
+        files = []
+        for ext in extensions:
+            files.extend(dir_path.rglob(f"*{ext}"))
+        
+        if not files:
+            self.safe_print(f"❌ No files found in: {dirpath}")
+            return
+        
+        self.safe_print(f"📁 Found {len(files)} files in: {dirpath}")
+        self.safe_print("-" * 50)
+        
+        success = 0
+        failed = 0
+        
+        for filepath in files:
+            try:
+                await self.upload_document(str(filepath))
+                success += 1
+            except Exception as e:
+                self.safe_print(f"❌ Failed: {filepath} - {e}")
+                failed += 1
+        
+        self.safe_print("-" * 50)
+        self.safe_print(f"✅ Upload complete: {success} success, {failed} failed")
+
     def _rerank_sources(self, question: str, sources: List[dict], top_n: int = 5) -> List[dict]:
-        """
-        基于余弦相似度对 sources 进行重排序，返回 top_n。
-        
-        使用 TF-IDF 向量化文本，计算查询与每个文档的余弦相似度。
-        余弦相似度范围为 [0, 1]，值越大表示相似度越高。
-        
-        Args:
-            question: 查询问题
-            sources: 候选源列表
-            top_n: 返回的最多结果数
-            
-        Returns:
-            按余弦相似度排序的 sources 列表
-        """
+        """基于余弦相似度对 sources 进行重排序"""
         if not sources:
             return []
-        
-        # 提取文本内容
+
         texts = []
         for src in sources:
             content = src.get('content') or src.get('page_content') or src.get('text') or src.get('filename', '')
-            # 清理文本
             if isinstance(content, str):
                 texts.append(content.strip())
             else:
                 texts.append(str(content))
-        
-        # 构建 TF-IDF 向量化器
-        # 最多考虑 100 个特征（词汇），预先分词避免特殊字符问题
+
         try:
             vectorizer = TfidfVectorizer(
                 max_features=100,
                 lowercase=True,
-                stop_words=None,  # 不移除停用词，保留所有词汇
-                analyzer='char',  # 使用字符级别的分析，支持中文
-                ngram_range=(1, 2),  # 单字和双字
-                min_df=1,  # 至少在1个文档中出现
-                max_df=1.0  # 最多在100%的文档中出现
+                stop_words=None,
+                analyzer='char',
+                ngram_range=(1, 2),
+                min_df=1,
+                max_df=1.0
             )
-            
-            # 组合查询和文档进行向量化
+
             combined_texts = [question] + texts
             tfidf_matrix = vectorizer.fit_transform(combined_texts)
-            
-            # 计算查询与每个文档的余弦相似度
-            query_vector = tfidf_matrix[0:1]  # 第一行是查询
-            doc_vectors = tfidf_matrix[1:]    # 其余行是文档
-            
+
+            query_vector = tfidf_matrix[0:1]
+            doc_vectors = tfidf_matrix[1:]
             similarities = cosine_similarity(query_vector, doc_vectors)[0]
-            
-            # 创建 (相似度, 源) 对并排序
+
             scored = list(zip(similarities, sources))
             scored.sort(key=lambda x: x[0], reverse=True)
-            
-            # 返回 top_n
+
             return [src for _, src in scored[:top_n]]
-            
+
         except Exception as e:
-            self.logger.warning(f"余弦相似度计算失败，降级使用 difflib: {e}")
-            # 如果 TF-IDF 计算失败，降级为 difflib 实现
+            self.logger.warning(f"余弦相似度计算失败: {e}")
             return self._rerank_sources_fallback(question, sources, top_n)
-    
-    async def _recursive_retrieve(self, question: str, topic: Optional[str] = None) -> tuple:
-        """
-        执行递归检索（新功能）
-        
-        Returns:
-            (检索结果列表, 检索报告)
-        """
-        if not self.enable_recursive_retrieval or not self.recursive_retriever:
-            return [], None
-        
-        try:
-            self.safe_print("\n🔄 Performing recursive retrieval...")
-            results, report = await self.recursive_retriever.retrieve(
-                question,
-                topic=topic or DialogTopic.get_table_name(self.current_topic),
-                return_report=True,
-            )
-            
-            if report:
-                self.safe_print(f"   ✓ Recursion Depth: {report.recursion_depth_used}/{self.recursive_retrieval_config.max_recursion_depth}")
-                self.safe_print(f"   ✓ Total Results Collected: {report.total_results}")
-                self.safe_print(f"   ✓ Final Results After Dedup: {report.final_results}")
-                self.safe_print(f"   ✓ Execution Time: {report.execution_time:.2f}s")
-            
-            return results, report
-        except Exception as e:
-            self.logger.warning(f"递归检索失败: {e}")
-            return [], None
-    
+
     def _rerank_sources_fallback(self, question: str, sources: List[dict], top_n: int = 5) -> List[dict]:
-        """
-        备选的重排序方法，使用 difflib 的 SequenceMatcher。
-        当 TF-IDF 向量化失败时使用此方法。
-        """
+        """备选重排序方法"""
         scored = []
         for src in sources:
             content = src.get('content') or src.get('page_content') or src.get('text') or src.get('filename', '')
             ratio = difflib.SequenceMatcher(None, question, content).ratio()
             scored.append((ratio, src))
-        
+
         scored.sort(key=lambda x: x[0], reverse=True)
         return [s for _, s in scored[:top_n]]
 
@@ -363,7 +271,6 @@ class CLIClient:
     async def ask_question(self, question: str) -> None:
         self.safe_print(f"\n{'='*60}")
         self.safe_print(f"Question: {question}")
-        self.safe_print(f"Topic: {self.current_topic.value}")
         self.safe_print(f"{'='*60}")
         self.safe_print("🤔 Thinking...")
 
@@ -374,7 +281,6 @@ class CLIClient:
         else:
             self.safe_print(f"💬 Continue session: {self.current_session_code}")
 
-        # Load prior memory and display brief context
         prior = self._load_session_memory(self.current_session_code)
         if prior:
             self.safe_print(f"🗃️ Loaded {len(prior)} memory entries for this session")
@@ -394,8 +300,7 @@ class CLIClient:
                             full_answer += content
                         elif event == "retrieval":
                             source = data["data"]
-                            if source.get("topic") == self.current_topic.value or source.get('table') == DialogTopic.get_table_name(self.current_topic):
-                                sources.append(source)
+                            sources.append(source)
                         elif event == "finish":
                             self.safe_print()
                     except Exception as e:
@@ -405,16 +310,13 @@ class CLIClient:
             self.safe_print("\n")
 
             if sources:
-                # 重排序 sources
                 reranked = self._rerank_sources(question, sources, top_n=10)
-                self.safe_print(f"📚 References (Top {len(reranked)} after rerank):")
+                self.safe_print(f"📚 References (Top {len(reranked)}):")
                 for i, source in enumerate(reranked, 1):
-                    filename = source.get("filename", source.get('meta', {}).get('filename', 'Unknown'))
+                    filename = source.get("filename", 'Unknown')
                     similarity = source.get("similarity") or 0
-                    topic = source.get("topic") or source.get('table') or 'Unknown'
-                    self.safe_print(f"  {i}. {filename} (Reported sim: {similarity}) [Topic: {topic}]")
+                    self.safe_print(f"  {i}. {filename} (similarity: {similarity})")
 
-                # 持久化本次检索结果到会话记忆
                 mem_entry = {
                     'timestamp': datetime.now().isoformat(),
                     'question': question,
@@ -428,13 +330,13 @@ class CLIClient:
 
     async def interactive_mode(self) -> None:
         self.safe_print("\n" + "=" * 60)
-        self.safe_print("AI RAG System - Interactive Mode with Recursive Retrieval")
+        self.safe_print("AI RAG System - Interactive Mode (单表模式)")
         self.safe_print("=" * 60)
         self.safe_print("Commands:")
         self.safe_print("  /help      - Show this help")
         self.safe_print("  /upload    - Upload a document")
+        self.safe_print("  /uploaddir - Upload all files in a directory")
         self.safe_print("  /new       - Start a new conversation session")
-        self.safe_print("  /topic     - Select a topic (预筛选接口)")
         self.safe_print("  /retrieve  - Toggle recursive retrieval (on/off)")
         self.safe_print("  /depth     - Set recursion max depth (1-4)")
         self.safe_print("  /preset    - Choose retrieval preset (light/balanced/deep)")
@@ -451,7 +353,7 @@ class CLIClient:
                     self.safe_print("Goodbye!")
                     break
                 elif user_input.lower() == '/help':
-                    self.safe_print("Available commands: /help /upload /new /topic /retrieve /depth /preset /exit")
+                    self.safe_print("Available commands: /help /upload /uploaddir /new /retrieve /depth /preset /exit")
                     continue
                 elif user_input.lower() == '/new':
                     self.current_session_code = None
@@ -479,7 +381,6 @@ class CLIClient:
                         self.safe_print("✅ Switched to DEEP preset")
                     else:
                         self.safe_print("Invalid choice")
-                    # 更新检索器配置
                     if self.recursive_retriever:
                         self.recursive_retriever.config = self.recursive_retrieval_config
                     continue
@@ -496,26 +397,12 @@ class CLIClient:
                 elif user_input.lower() == '/upload':
                     filepath = input("Enter file path: ").strip()
                     if filepath:
-                        # 允许在上传时选择主题
-                        self.safe_print("Choose topic (number) or press Enter to use current:")
-                        for i, t in enumerate(DialogTopic, 1):
-                            self.safe_print(f"  {i}. {t.value}")
-                        choice = input("Topic#: ").strip()
-                        target = None
-                        if choice.isdigit() and 1 <= int(choice) <= len(DialogTopic):
-                            target = list(DialogTopic)[int(choice)-1]
-                        await self.upload_document(filepath, target)
+                        await self.upload_document(filepath)
                     continue
-                elif user_input.lower() == '/topic':
-                    self.safe_print("Select topic:")
-                    for i, t in enumerate(DialogTopic, 1):
-                        self.safe_print(f"  {i}. {t.value}")
-                    choice = input("Topic#: ").strip()
-                    if choice.isdigit() and 1 <= int(choice) <= len(DialogTopic):
-                        self.current_topic = list(DialogTopic)[int(choice)-1]
-                        self.safe_print(f"✅ Current topic set to: {self.current_topic.value}")
-                    else:
-                        self.safe_print("Invalid choice")
+                elif user_input.lower() == '/uploaddir':
+                    dirpath = input("Enter directory path: ").strip()
+                    if dirpath:
+                        await self.upload_directory(dirpath)
                     continue
                 else:
                     await self.ask_question(user_input)
@@ -528,27 +415,24 @@ class CLIClient:
 
 
 async def main():
-    parser = argparse.ArgumentParser(description="AI RAG System CLI (Refactored)")
+    parser = argparse.ArgumentParser(description="AI RAG System CLI (单表模式)")
     parser.add_argument("--interactive", "-i", action="store_true", help="Interactive mode")
     parser.add_argument("--upload", "-u", help="Upload a document")
+    parser.add_argument("--uploaddir", "-d", help="Upload all files in a directory")
     parser.add_argument("--question", "-q", help="Ask a single question")
-    parser.add_argument("--topic", "-t", help="Initial topic (name or value)")
+    parser.add_argument("--extensions", "-e", nargs="+", default=[".txt"], help="File extensions to upload")
 
     args = parser.parse_args()
 
-    init_topic = DialogTopic.RESOURCE
-    if args.topic:
-        t = DialogTopic.from_string(args.topic)
-        if t:
-            init_topic = t
-
-    client = CLIClient(topic=init_topic)
+    client = CLIClient()
 
     if not await client.initialize():
         client.safe_print("Failed to initialize system. Please check your configuration and .env settings.")
         return
 
-    if args.upload:
+    if args.uploaddir:
+        await client.upload_directory(args.uploaddir, args.extensions)
+    elif args.upload:
         await client.upload_document(args.upload)
     elif args.question:
         await client.ask_question(args.question)
